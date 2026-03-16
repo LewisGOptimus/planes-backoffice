@@ -73,6 +73,7 @@ async function ensureBillingModelSchema() {
   await query("ALTER TABLE billing.suscripciones ADD COLUMN IF NOT EXISTS billing_cycle billing.periodo_precio");
   await query("UPDATE billing.suscripciones SET billing_cycle = periodo WHERE billing_cycle IS NULL");
   await query("ALTER TABLE billing.suscripciones ALTER COLUMN billing_cycle SET NOT NULL");
+  await query("ALTER TABLE billing.suscripciones ALTER COLUMN precio_plan_id DROP NOT NULL");
   await query(`
     DO $$
     BEGIN
@@ -602,8 +603,8 @@ async function resolvePlanCharge(client: PoolClient, planId: string, billingCycl
   const plan = await one<{ pricing_mode: string }>(client, "SELECT pricing_mode::text FROM billing.planes WHERE id = $1", [planId]);
   if (!plan) throw new AppError(404, "NOT_FOUND", "Plan not found");
 
-  const fallbackPlanPrice = await getPlanPrice(client, planId, billingCycle, date);
   if (plan.pricing_mode !== "SUM_COMPONENTS") {
+    const fallbackPlanPrice = await getPlanPrice(client, planId, billingCycle, date);
     return {
       pricing_mode: plan.pricing_mode,
       plan_price_id: fallbackPlanPrice.id,
@@ -631,7 +632,7 @@ async function resolvePlanCharge(client: PoolClient, planId: string, billingCycl
 
   return {
     pricing_mode: plan.pricing_mode,
-    plan_price_id: fallbackPlanPrice.id,
+    plan_price_id: null,
     amount: Number(amount.toFixed(2)),
     details,
   };

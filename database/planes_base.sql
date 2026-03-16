@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS billing.suscripciones (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   empresa_id UUID NOT NULL REFERENCES core.empresas(id) ON DELETE RESTRICT,
   plan_id UUID NOT NULL REFERENCES billing.planes(id) ON DELETE RESTRICT,
-  precio_plan_id UUID NOT NULL REFERENCES billing.precios_planes(id) ON DELETE RESTRICT,
+  precio_plan_id UUID REFERENCES billing.precios_planes(id) ON DELETE RESTRICT,
   estado billing.estado_suscripcion NOT NULL DEFAULT 'ACTIVA',
   billing_cycle billing.periodo_precio NOT NULL,
   periodo billing.periodo_precio NOT NULL,
@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS billing.suscripciones (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE billing.suscripciones
+  ALTER COLUMN precio_plan_id DROP NOT NULL;
 
 CREATE TABLE IF NOT EXISTS billing.items_suscripcion (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

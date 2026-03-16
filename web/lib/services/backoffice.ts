@@ -80,6 +80,7 @@ export async function ensureBillingGraceSchema() {
     `);
     await client.query("UPDATE billing.suscripciones SET billing_cycle = periodo WHERE billing_cycle IS NULL");
     await client.query("ALTER TABLE billing.suscripciones ALTER COLUMN billing_cycle SET NOT NULL");
+    await client.query("ALTER TABLE billing.suscripciones ALTER COLUMN precio_plan_id DROP NOT NULL");
 
     await client.query(`
       DO $$
@@ -1132,8 +1133,8 @@ async function resolveSubscriptionCharge(client: PoolClient, planId: string, bil
   const plan = await one<{ pricing_mode: string }>(client, "SELECT pricing_mode::text FROM billing.planes WHERE id = $1", [planId]);
   if (!plan) throw new AppError(404, "NOT_FOUND", "Plan no existe");
 
-  const planPrice = await getVigentePrecioPlan(client, planId, billingCycle, fecha);
   if (plan.pricing_mode !== "SUM_COMPONENTS") {
+    const planPrice = await getVigentePrecioPlan(client, planId, billingCycle, fecha);
     return { priceId: planPrice.id, amount: Number(planPrice.valor) };
   }
 
@@ -1148,7 +1149,7 @@ async function resolveSubscriptionCharge(client: PoolClient, planId: string, bil
     amount += Number(pr.valor) * Math.max(1, Number(item.cantidad ?? 1));
   }
 
-  return { priceId: planPrice.id, amount: Number(amount.toFixed(2)) };
+  return { priceId: null, amount: Number(amount.toFixed(2)) };
 }
 
 export async function createSubscriptionWithOptions(payload: Record<string, unknown>) {

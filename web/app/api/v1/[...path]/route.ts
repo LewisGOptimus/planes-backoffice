@@ -65,6 +65,7 @@ async function ensureBillingGraceSchema() {
   await query("ALTER TABLE billing.suscripciones ADD COLUMN IF NOT EXISTS billing_cycle billing.periodo_precio");
   await query("UPDATE billing.suscripciones SET billing_cycle = periodo WHERE billing_cycle IS NULL");
   await query("ALTER TABLE billing.suscripciones ALTER COLUMN billing_cycle SET NOT NULL");
+  await query("ALTER TABLE billing.suscripciones ALTER COLUMN precio_plan_id DROP NOT NULL");
   await query(`
     CREATE TABLE IF NOT EXISTS billing.suscripciones_plan_historial (
       id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
