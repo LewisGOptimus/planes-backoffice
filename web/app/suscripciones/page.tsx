@@ -115,6 +115,16 @@ type RenewDraft = {
 };
 
 type PlanChangeReason = "NUEVO_PLAN" | "RENOVACION" | "CAMBIO_PLAN";
+type ConsolidatedSubscriptionItem = {
+  key: string;
+  producto_id: string;
+  rows: Row[];
+  totalCantidad: number;
+  itemState: string;
+  representative: Row;
+  isConsolidated: boolean;
+  integrationKind: "CONSUMIBLE_SERVICIO" | "REGULAR";
+};
 
 const EMPTY_DRAFT: DraftItem = {
   origen: "ADDON",
@@ -156,12 +166,29 @@ function badge(value: string) {
   return <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-semibold">{value}</span>;
 }
 
+function toDateOnly(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  return parsed.toISOString().slice(0, 10);
+}
+
 function isPriceValidForDate(price: ProductPriceRow, date: string): boolean {
   if (!price.activo) return false;
-  if (!date) return true;
-  if (price.valido_desde && price.valido_desde > date) return false;
-  if (price.valido_hasta && price.valido_hasta < date) return false;
+  const targetDate = toDateOnly(date);
+  if (!targetDate) return true;
+  const validFrom = toDateOnly(price.valido_desde);
+  const validTo = toDateOnly(price.valido_hasta);
+  if (validFrom && validFrom > targetDate) return false;
+  if (validTo && validTo < targetDate) return false;
   return true;
+}
+
+function normalizeProductType(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase();
 }
 
 export default function SuscripcionesPage() {
@@ -203,9 +230,13 @@ export default function SuscripcionesPage() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelDate, setCancelDate] = useState(new Date().toISOString().slice(0, 10));
   const [entitlementSearch, setEntitlementSearch] = useState("");
-  const [autoInvoiceOnAddItem, setAutoInvoiceOnAddItem] = useState(true);
+  const [autoInvoiceOnAddItem, setAutoInvoiceOnAddItem] = useState(false);
   const [createDiscount, setCreateDiscount] = useState<DiscountDraft>(EMPTY_DISCOUNT);
   const [addItemDiscount, setAddItemDiscount] = useState<DiscountDraft>(EMPTY_DISCOUNT);
+  const [existingDraftItems, setExistingDraftItems] = useState<DraftItem[]>([]);
+  const [integrationHistoryModalOpen, setIntegrationHistoryModalOpen] = useState(false);
+  const [integrationHistoryProductLabel, setIntegrationHistoryProductLabel] = useState("");
+  const [integrationHistoryRows, setIntegrationHistoryRows] = useState<Row[]>([]);
   const [selectedEntitlements, setSelectedEntitlements] = useState<SubscriptionEntitlementRow[]>([]);
   const [selectedPlanEntitlements, setSelectedPlanEntitlements] = useState<PlanEntitlementRow[]>([]);
   const [historyRows, setHistoryRows] = useState<SubscriptionPlanHistoryRow[]>([]);
@@ -263,12 +294,30 @@ export default function SuscripcionesPage() {
     if (!planId || !cycle) return null;
     return lookups.precios_planes.find((p) => p.plan_id === planId && p.periodo === cycle) ?? null;
   }, [lookups.precios_planes, selectedSubscription]);
+  const productOptions = useMemo(
+    () =>
+      catalog
+        .map((p) => ({
+          value: p.id,
+          label: `${p.nombre} (${p.codigo})`,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [catalog],
+  );
   const draftProduct = useMemo(() => catalog.find((p) => p.id === draft.producto_id) ?? null, [catalog, draft.producto_id]);
   const selectedDraftPrice = useMemo(() => prices.find((p) => p.id === draft.precio_id) ?? null, [prices, draft.precio_id]);
   const selectedPlanPrice = useMemo(() => {
     if (!form.plan_id || !form.billing_cycle) return null;
     return lookups.precios_planes.find((p) => p.plan_id === form.plan_id && p.periodo === form.billing_cycle) ?? null;
   }, [lookups.precios_planes, form.plan_id, form.billing_cycle]);
+  const productById = useMemo(
+    () =>
+      catalog.reduce<Record<string, ProductCatalogRow>>((acc, p) => {
+        acc[p.id] = p;
+        return acc;
+      }, {}),
+    [catalog],
+  );
   const renewTargetSubscription = useMemo(
     () => rows.find((x) => String(x.id ?? "") === renewTargetId) ?? null,
     [rows, renewTargetId],
@@ -306,6 +355,38 @@ export default function SuscripcionesPage() {
     () => selectedItems.filter((it) => String(it.estado ?? "").toUpperCase() === "ACTIVO").length,
     [selectedItems],
   );
+  const consolidatedSelectedItems = useMemo<ConsolidatedSubscriptionItem[]>(() => {
+    const groups = new Map<string, ConsolidatedSubscriptionItem>();
+    selectedItems.forEach((it, idx) => {
+      const productId = String(it.producto_id ?? "");
+      const product = productById[productId];
+      const productType = normalizeProductType(product?.tipo);
+      const isConsumableService = Boolean(product?.es_consumible) || productType === "SERVICIO";
+      const key = isConsumableService ? `CONS-${productId}` : `ROW-${String(it.id ?? "")}-${idx}`;
+      const qty = Number(it.cantidad ?? 0);
+      const numericQty = Number.isFinite(qty) ? qty : 0;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          producto_id: productId,
+          rows: [it],
+          totalCantidad: numericQty,
+          itemState: String(it.estado ?? "").toUpperCase(),
+          representative: it,
+          isConsolidated: isConsumableService,
+          integrationKind: isConsumableService ? "CONSUMIBLE_SERVICIO" : "REGULAR",
+        });
+        return;
+      }
+      const current = groups.get(key)!;
+      current.rows.push(it);
+      current.totalCantidad += numericQty;
+      if (current.itemState !== "ACTIVO" && String(it.estado ?? "").toUpperCase() === "ACTIVO") {
+        current.itemState = "ACTIVO";
+      }
+    });
+    return Array.from(groups.values());
+  }, [selectedItems, productById]);
   const openOverrideEntitlementsCount = useMemo(
     () => selectedOverrideEntitlements.filter((ent) => !ent.efectivo_hasta).length,
     [selectedOverrideEntitlements],
@@ -336,6 +417,23 @@ export default function SuscripcionesPage() {
   }, [prices, draft.producto_id, draft.fecha_inicio]);
 
   const resetDraft = (startDate = "") => setDraft({ ...EMPTY_DRAFT, fecha_inicio: startDate });
+  const openAddItemModal = () => {
+    if (!selected) {
+      toast.error("Selecciona una suscripcion para agregar items.");
+      return;
+    }
+    const defaultStartDate = String(selectedSubscription?.periodo_actual_inicio ?? selectedSubscription?.fecha_inicio ?? new Date().toISOString().slice(0, 10));
+    resetDraft(defaultStartDate);
+    setExistingDraftItems([]);
+    setAutoInvoiceOnAddItem(false);
+    setAddItemDiscount(EMPTY_DISCOUNT);
+    setAddItemModalOpen(true);
+  };
+  const openIntegrationHistory = (group: ConsolidatedSubscriptionItem) => {
+    setIntegrationHistoryRows(group.rows);
+    setIntegrationHistoryProductLabel(productLabel(group.producto_id));
+    setIntegrationHistoryModalOpen(true);
+  };
   const openCreate = () => {
     const today = new Date().toISOString().slice(0, 10);
     setEditing(null);
@@ -590,53 +688,121 @@ export default function SuscripcionesPage() {
     resetDraft(form.fecha_inicio);
   };
 
-  const addItemExisting = async () => {
-    if (!selected) return;
+  const hasAssociatedProduct = (productId: string) =>
+    selectedItems.some((it) => String(it.producto_id) === productId && String(it.estado ?? "ACTIVO").toUpperCase() === "ACTIVO");
+
+  const addItemExisting = () => {
     const error = validateItem(draft);
     if (error) {
       toast.error(error);
       return;
     }
+    const product = catalog.find((p) => p.id === draft.producto_id);
+    if (!product) {
+      toast.error("El producto no existe.");
+      return;
+    }
+    const productType = normalizeProductType(product.tipo);
+    const isModuleOrSoftware = productType === "MODULO" || productType === "SOFTWARE";
+    const isConsumableService = Boolean(product.es_consumible) || productType === "SERVICIO";
 
-    try {
-      const hasPrice = Boolean(selectedDraftPrice);
-      const unitPrice = selectedDraftPrice ? Number(selectedDraftPrice.valor) : 0;
-      const itemTotal = Number((unitPrice * Number(draft.cantidad)).toFixed(2));
-      const payload: Record<string, unknown> = {
-        suscripcion_id: selected,
-        producto_id: draft.producto_id,
-        precio_id: draft.precio_id || null,
-        cantidad: Number(draft.cantidad),
-        fecha_inicio: draft.fecha_inicio,
-        fecha_fin: draft.fecha_fin || null,
-        fecha_efectiva_inicio: draft.fecha_efectiva_inicio || null,
-        fecha_efectiva_fin: draft.fecha_efectiva_fin || null,
-        generar_factura: autoInvoiceOnAddItem,
-      };
-      if (autoInvoiceOnAddItem && addItemDiscount.tipo) {
-        payload.descuento_tipo = addItemDiscount.tipo;
-        payload.descuento_valor = addItemDiscount.valor;
-        payload.descuento_motivo = addItemDiscount.motivo.trim() || null;
-      }
-      const res = await fetchJson<{ item_suscripcion_id: string; factura_id: string | null }>("/api/backoffice/suscripciones/add-item-with-options", { method: "POST", body: payload });
-      if (isSuccess(res)) {
-        const msg = res.data.factura_id
-          ? `Item agregado y facturado por ${formatMoney(itemTotal)}.`
-          : hasPrice
-            ? `Item agregado por ${formatMoney(itemTotal)} (sin factura).`
-            : "Item agregado sin factura.";
-        setMessage(msg);
-        toast.success(msg);
-        resetDraft(new Date().toISOString().slice(0, 10));
-        setAutoInvoiceOnAddItem(true);
-        setAddItemDiscount(EMPTY_DISCOUNT);
-        setAddItemModalOpen(false);
-        await refresh();
+    if (isModuleOrSoftware) {
+      const alreadyInSubscription = hasAssociatedProduct(draft.producto_id);
+      const alreadyQueued = existingDraftItems.some((it) => it.producto_id === draft.producto_id);
+      if (alreadyInSubscription || alreadyQueued) {
+        toast.error("Este modulo o software ya se encuentra asociado a la suscripcion.");
         return;
       }
-      showApiError(res);
+      setExistingDraftItems((prev) => [...prev, { ...draft }]);
+      resetDraft(draft.fecha_inicio || new Date().toISOString().slice(0, 10));
+      return;
+    }
+
+    if (isConsumableService) {
+      setExistingDraftItems((prev) => {
+        const idx = prev.findIndex((it) => it.producto_id === draft.producto_id);
+        if (idx < 0) return [...prev, { ...draft }];
+        const mergedQty = Number(prev[idx].cantidad || 0) + Number(draft.cantidad || 0);
+        const merged = [...prev];
+        merged[idx] = { ...merged[idx], cantidad: String(mergedQty) };
+        return merged;
+      });
+      toast.success("Cantidad integrada en el registro consolidado.");
+      resetDraft(draft.fecha_inicio || new Date().toISOString().slice(0, 10));
+      return;
+    }
+
+    setExistingDraftItems((prev) => [...prev, { ...draft }]);
+    resetDraft(draft.fecha_inicio || new Date().toISOString().slice(0, 10));
+  };
+
+  const submitExistingDraftItems = async () => {
+    if (!selected) return;
+    if (existingDraftItems.length === 0) {
+      toast.error("Agrega al menos un item antes de guardar.");
+      return;
+    }
+    if (autoInvoiceOnAddItem) {
+      const missingInvoicePrice = existingDraftItems.find((it) => !it.precio_id || !prices.find((p) => p.id === it.precio_id));
+      if (missingInvoicePrice) {
+        toast.error("Para facturar automaticamente, todos los items deben tener un precio vigente.");
+        return;
+      }
+    }
+    const blockedItem = existingDraftItems.find((it) => {
+      const product = catalog.find((p) => p.id === it.producto_id);
+      const type = normalizeProductType(product?.tipo);
+      const isModuleOrSoftware = type === "MODULO" || type === "SOFTWARE";
+      return isModuleOrSoftware && hasAssociatedProduct(it.producto_id);
+    });
+    if (blockedItem) {
+      toast.error("No se puede integrar: el modulo o software ya esta asociado a esta suscripcion.");
+      return;
+    }
+
+    let processed = 0;
+    let invoiceCount = 0;
+    try {
+      for (const item of existingDraftItems) {
+        const payload: Record<string, unknown> = {
+          suscripcion_id: selected,
+          producto_id: item.producto_id,
+          precio_id: item.precio_id || null,
+          cantidad: Number(item.cantidad),
+          fecha_inicio: item.fecha_inicio,
+          fecha_fin: item.fecha_fin || null,
+          fecha_efectiva_inicio: item.fecha_efectiva_inicio || null,
+          fecha_efectiva_fin: item.fecha_efectiva_fin || null,
+          generar_factura: autoInvoiceOnAddItem,
+        };
+        if (autoInvoiceOnAddItem && addItemDiscount.tipo) {
+          payload.descuento_tipo = addItemDiscount.tipo;
+          payload.descuento_valor = addItemDiscount.valor;
+          payload.descuento_motivo = addItemDiscount.motivo.trim() || null;
+        }
+        const res = await fetchJson<{ item_suscripcion_id: string; factura_id: string | null }>("/api/backoffice/suscripciones/add-item-with-options", { method: "POST", body: payload });
+        if (!isSuccess(res)) {
+          showApiError(res);
+          if (processed > 0) toast.error(`Se agregaron ${processed} items antes del error.`);
+          await refresh();
+          return;
+        }
+        processed += 1;
+        if (res.data.factura_id) invoiceCount += 1;
+      }
+      const msg = autoInvoiceOnAddItem
+        ? `Se agregaron ${processed} items. Facturas generadas: ${invoiceCount}.`
+        : `Se agregaron ${processed} items sin facturacion automatica.`;
+      setMessage(msg);
+      toast.success(msg);
+      setExistingDraftItems([]);
+      resetDraft(String(selectedSubscription?.periodo_actual_inicio ?? selectedSubscription?.fecha_inicio ?? new Date().toISOString().slice(0, 10)));
+      setAutoInvoiceOnAddItem(false);
+      setAddItemDiscount(EMPTY_DISCOUNT);
+      setAddItemModalOpen(false);
+      await refresh();
     } catch {
-      toast.error("Error de red al agregar item.");
+      toast.error("Error de red al agregar items.");
     }
   };
 
@@ -714,7 +880,13 @@ export default function SuscripcionesPage() {
 
   const companyLabel = (id: string) => lookups.empresas.find((x) => x.value === id)?.label ?? id;
   const planLabel = (id: string) => lookups.planes.find((x) => x.value === id)?.label ?? id;
-  const productLabel = (id: string) => lookups.productos.find((x) => x.value === id)?.label ?? id;
+  const productLabel = (id: string) =>
+    lookups.productos.find((x) => x.value === id)?.label
+    ?? (() => {
+      const product = catalog.find((p) => p.id === id);
+      if (!product) return id;
+      return `${product.nombre} (${product.codigo})`;
+    })();
   const priceLabel = (id: string) => {
     const p = prices.find((x) => x.id === id);
     if (!p) return "-";
@@ -731,7 +903,7 @@ export default function SuscripcionesPage() {
     <div className="mt-2 rounded border border-slate-200 p-3">
       <p className="text-xs font-semibold">Flujo guiado item: Producto - Precio - Cantidad - Vigencia</p>
       <div className="mt-2 grid gap-2 md:grid-cols-2">
-        <label className="text-xs">1. Producto<select value={draft.producto_id} onChange={(e) => setDraft((p) => ({ ...p, producto_id: e.target.value, precio_id: "" }))} className="mt-1 ui-input"><option value="">Producto...</option>{lookups.productos.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}</select></label>
+        <label className="text-xs">1. Producto<select value={draft.producto_id} onChange={(e) => setDraft((p) => ({ ...p, producto_id: e.target.value, precio_id: "" }))} className="mt-1 ui-input"><option value="">Producto...</option>{productOptions.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}</select></label>
         <label className="text-xs">2. Precio ({draftProduct?.es_consumible ? "obligatorio" : "opcional"})<select value={draft.precio_id} onChange={(e) => setDraft((p) => ({ ...p, precio_id: e.target.value }))} className="mt-1 ui-input" disabled={!draft.producto_id}><option value="">Seleccionar precio...</option>{availableDraftPrices.map((pr) => <option key={pr.id} value={pr.id}>{`${pr.periodo} | ${formatMoney(pr.valor)} | ${formatDateOnly(pr.valido_desde)} - ${formatDateOnly(pr.valido_hasta)}`}</option>)}</select></label>
         <label className="text-xs">3. Cantidad<input type="number" value={draft.cantidad} onChange={(e) => setDraft((p) => ({ ...p, cantidad: e.target.value }))} className="mt-1 ui-input" /></label>
         <div className="md:col-span-2 border-t border-slate-200 pt-2">
@@ -793,7 +965,7 @@ export default function SuscripcionesPage() {
         disabled={mode === "existing" && autoInvoiceOnAddItem && !selectedDraftPrice}
         className="mt-3 ui-btn ui-btn-primary ui-btn-sm disabled:opacity-50"
       >
-        {mode === "existing" ? "Agregar item a suscripcion" : "Agregar item manual"}
+        {mode === "existing" ? "Agregar item a lista" : "Agregar item manual"}
       </button>
     </div>
   );
@@ -866,7 +1038,7 @@ export default function SuscripcionesPage() {
                   <button
                     onClick={() => {
                       setSelected(String((r as any).id));
-                      setAutoInvoiceOnAddItem(true);
+                      setAutoInvoiceOnAddItem(false);
                       setAddItemDiscount(EMPTY_DISCOUNT);
                       setEntitlementSearch("");
                       setDetailsModalOpen(true);
@@ -910,6 +1082,9 @@ export default function SuscripcionesPage() {
         onClose={() => {
           setDetailsModalOpen(false);
           setEntitlementSearch("");
+          setIntegrationHistoryModalOpen(false);
+          setIntegrationHistoryRows([]);
+          setIntegrationHistoryProductLabel("");
           setSelected("");
           setSelectedEntitlements([]);
           setSelectedPlanEntitlements([]);
@@ -959,40 +1134,62 @@ export default function SuscripcionesPage() {
               <section className="rounded-2xl border border-[#DCE8F7] bg-[linear-gradient(180deg,#FFFFFF_0%,#F8FBFF_100%)] p-3.5">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h4 className="font-semibold text-slate-900">Items del plan</h4>
-                  <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-                    {activeItemsCount}/{selectedItems.length}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={openAddItemModal}
+                      className="ui-btn ui-btn-primary ui-btn-sm"
+                    >
+                      Agregar item
+                    </button>
+                    <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
+                      {activeItemsCount}/{selectedItems.length}
+                    </span>
+                  </div>
                 </div>
-                {selectedItems.length === 0 ? (
+                {consolidatedSelectedItems.length === 0 ? (
                   <p className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
                     Sin items en esta suscripcion.
                   </p>
                 ) : (
                   <ul className="max-h-80 space-y-2 overflow-auto pr-1">
-                    {selectedItems.map((it, idx) => {
-                      const itemState = String(it.estado ?? "").toUpperCase();
+                    {consolidatedSelectedItems.map((group) => {
+                      const itemState = group.itemState;
                       const isActiveItem = itemState === "ACTIVO";
                       return (
-                        <li key={`${String(it.id ?? "")}-${idx}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+                        <li key={group.key} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
                           <div className="flex flex-wrap items-start justify-between gap-2">
                             <div>
-                              <p className="text-sm font-semibold text-slate-900">{productLabel(String(it.producto_id))}</p>
-                              <p className="text-xs text-slate-500">{it.precio_id ? priceLabel(String(it.precio_id)) : "Sin precio asociado"}</p>
+                              <p className="text-sm font-semibold text-slate-900">{productLabel(group.producto_id)}</p>
+                              <p className="text-xs text-slate-500">
+                                {group.representative.precio_id ? priceLabel(String(group.representative.precio_id)) : "Sin precio asociado"}
+                              </p>
+                              {group.isConsolidated && (
+                                <p className="mt-1 text-[11px] text-slate-600">
+                                  Registro consolidado para consumible/servicio ({group.rows.length} integraciones).
+                                </p>
+                              )}
                             </div>
-                            <span
-                              className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                                isActiveItem ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
-                              }`}
-                            >
-                              {itemState || "SIN ESTADO"}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              {group.isConsolidated && group.rows.length > 1 && (
+                                <button onClick={() => openIntegrationHistory(group)} className="ui-btn ui-btn-outline ui-btn-sm">
+                                  Ver integraciones
+                                </button>
+                              )}
+                              <span
+                                className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                                  isActiveItem ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700"
+                                }`}
+                              >
+                                {itemState || "SIN ESTADO"}
+                              </span>
+                            </div>
                           </div>
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
                             <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 font-medium">
-                              Cantidad: {String(it.cantidad ?? "-")}
+                              Cantidad: {group.isConsolidated ? String(group.totalCantidad) : String(group.representative.cantidad ?? "-")}
                             </span>
                             <span>
-                              Vigencia: {formatDateOnly(it.fecha_inicio)} - {formatDateOnly(it.fecha_fin)}
+                              Vigencia: {formatDateOnly(group.representative.fecha_inicio)} - {formatDateOnly(group.representative.fecha_fin)}
                             </span>
                           </div>
                         </li>
@@ -1103,6 +1300,46 @@ export default function SuscripcionesPage() {
                 )}
               </section>
             </div>
+          </div>
+        )}
+      </AppModal>
+
+      <AppModal
+        open={integrationHistoryModalOpen}
+        onClose={() => {
+          setIntegrationHistoryModalOpen(false);
+          setIntegrationHistoryRows([]);
+          setIntegrationHistoryProductLabel("");
+        }}
+        maxWidthClassName="max-w-4xl"
+        title={`Historial de integraciones: ${integrationHistoryProductLabel || "-"}`}
+      >
+        {integrationHistoryRows.length === 0 ? (
+          <p className="text-sm text-slate-600">No hay integraciones registradas para mostrar.</p>
+        ) : (
+          <div className="main-stack">
+            <p className="text-xs text-slate-600">
+              Vista informativa de items integrados previamente para este producto.
+            </p>
+            <ul className="max-h-[55vh] space-y-2 overflow-auto pr-1">
+              {integrationHistoryRows.map((it, idx) => (
+                <li key={`${String(it.id ?? "no-id")}-${idx}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                      Estado: {String(it.estado ?? "SIN ESTADO")}
+                    </span>
+                    <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                      Cantidad: {String(it.cantidad ?? "-")}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                    <span>Precio: {it.precio_id ? priceLabel(String(it.precio_id)) : "Sin precio asociado"}</span>
+                    <span>Pago: {formatDateOnly(it.fecha_inicio)} - {formatDateOnly(it.fecha_fin)}</span>
+                    <span>Vigencia efectiva: {formatDateOnly(it.fecha_efectiva_inicio)} - {formatDateOnly(it.fecha_efectiva_fin)}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </AppModal>
@@ -1353,13 +1590,48 @@ export default function SuscripcionesPage() {
 
       <AppModal
         open={addItemModalOpen}
-        onClose={() => setAddItemModalOpen(false)}
+        onClose={() => {
+          setAddItemModalOpen(false);
+          setExistingDraftItems([]);
+          setAutoInvoiceOnAddItem(false);
+          setAddItemDiscount(EMPTY_DISCOUNT);
+        }}
         maxWidthClassName="max-w-3xl"
         title="Agregar item de suscripcion"
       >
         {renderGuidedItemBuilder("existing")}
-        <div className="mt-3 flex justify-end">
-          <button onClick={() => setAddItemModalOpen(false)} className="ui-btn ui-btn-outline">Cerrar</button>
+        {existingDraftItems.length > 0 && (
+          <div className="mt-3 rounded border border-slate-200 p-3">
+            <p className="text-xs font-semibold">Items a crear ({existingDraftItems.length})</p>
+            <ul className="mt-2 space-y-1 text-xs">
+              {existingDraftItems.map((d, idx) => (
+                <li key={`${d.producto_id}-${d.precio_id}-${idx}`} className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-200 px-2 py-1">
+                  <span>{productLabel(d.producto_id)} | precio {d.precio_id ? priceLabel(d.precio_id) : "-"} | cant {d.cantidad} | pago {d.fecha_inicio}</span>
+                  <button onClick={() => setExistingDraftItems((prev) => prev.filter((_, i) => i !== idx))} className="ui-btn ui-btn-danger ui-btn-sm">Quitar</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            onClick={() => {
+              setAddItemModalOpen(false);
+              setExistingDraftItems([]);
+              setAutoInvoiceOnAddItem(false);
+              setAddItemDiscount(EMPTY_DISCOUNT);
+            }}
+            className="ui-btn ui-btn-outline ui-btn-sm"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={submitExistingDraftItems}
+            disabled={existingDraftItems.length === 0}
+            className="ui-btn ui-btn-primary px-5 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            Crear items
+          </button>
         </div>
       </AppModal>
 
