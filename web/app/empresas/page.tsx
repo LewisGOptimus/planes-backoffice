@@ -12,6 +12,10 @@ import { AppModal } from "@/components/ui/modal";
 type EmpresaCard = {
   empresa_id: string;
   empresa_nombre: string;
+  telefono: string | null;
+  departamento: string | null;
+  ciudad: string | null;
+  direccion: string | null;
   owner_user_id: string | null;
   owner_nombre: string | null;
   owner_email: string | null;
@@ -24,7 +28,17 @@ type EmpresaCard = {
   total_abierto: string | null;
 };
 
-type EmpresaRow = { id: string; nombre: string; nit: string | null; timezone: string; activa: boolean };
+type EmpresaRow = {
+  id: string;
+  nombre: string;
+  nit: string | null;
+  telefono: string | null;
+  departamento: string | null;
+  ciudad: string | null;
+  direccion: string | null;
+  timezone: string;
+  activa: boolean;
+};
 type Lookups = { usuarios: Array<{ value: string; label: string }> };
 
 type ConsumablePoolRow = {
@@ -91,7 +105,17 @@ export default function EmpresasPage() {
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [msg, setMsg] = useState("Listo");
-  const [form, setForm] = useState({ nombre: "", nit: "", timezone: "UTC", activa: "true", owner_user_id: "" });
+  const [form, setForm] = useState({
+    nombre: "",
+    nit: "",
+    telefono: "",
+    departamento: "",
+    ciudad: "",
+    direccion: "",
+    timezone: "UTC",
+    activa: "true",
+    owner_user_id: "",
+  });
   const [usuarios, setUsuarios] = useState<Array<{ value: string; label: string }>>([]);
   const [poolByEmpresa, setPoolByEmpresa] = useState<Record<string, ConsumablePoolRow[]>>({});
   const [poolLoadingEmpresaId, setPoolLoadingEmpresaId] = useState<string | null>(null);
@@ -122,7 +146,17 @@ export default function EmpresasPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ nombre: "", nit: "", timezone: "UTC", activa: "true", owner_user_id: "" });
+    setForm({
+      nombre: "",
+      nit: "",
+      telefono: "",
+      departamento: "",
+      ciudad: "",
+      direccion: "",
+      timezone: "UTC",
+      activa: "true",
+      owner_user_id: "",
+    });
     setModal(true);
   };
 
@@ -136,7 +170,17 @@ export default function EmpresasPage() {
       const row = res.data;
       setEditing(row.id);
       const owner = cards.find((x) => x.empresa_id === empresaId)?.owner_user_id ?? "";
-      setForm({ nombre: row.nombre, nit: row.nit ?? "", timezone: row.timezone ?? "UTC", activa: String(row.activa), owner_user_id: owner });
+      setForm({
+        nombre: row.nombre,
+        nit: row.nit ?? "",
+        telefono: row.telefono ?? "",
+        departamento: row.departamento ?? "",
+        ciudad: row.ciudad ?? "",
+        direccion: row.direccion ?? "",
+        timezone: row.timezone ?? "UTC",
+        activa: String(row.activa),
+        owner_user_id: owner,
+      });
       setModal(true);
     } catch {
       toast.error("Error de red al cargar empresa.");
@@ -153,6 +197,10 @@ export default function EmpresasPage() {
         id: editing ?? undefined,
         nombre: form.nombre,
         nit: form.nit,
+        telefono: form.telefono,
+        departamento: form.departamento,
+        ciudad: form.ciudad,
+        direccion: form.direccion,
         timezone: form.timezone,
         activa: form.activa === "true",
         owner_user_id: form.owner_user_id,
@@ -256,6 +304,11 @@ export default function EmpresasPage() {
                   label="Responsable"
                   value={c.owner_nombre ?? "Sin asignar"}
                   hint={c.owner_user_id ? "Usuario vinculado a la empresa" : "Pendiente asignar usuario dueno"}
+                />
+                <InfoPanel
+                  label="Contacto"
+                  value={`${c.telefono ?? "Sin telefono"} | ${c.ciudad ?? "Sin ciudad"}${c.departamento ? `, ${c.departamento}` : ""}`}
+                  hint={c.direccion ?? "Sin direccion registrada"}
                 />
 
                 <InfoPanel
@@ -386,6 +439,42 @@ export default function EmpresasPage() {
               onChange={(e) => setForm((p) => ({ ...p, nit: e.target.value }))}
               className="mt-1 ui-input"
               placeholder="Identificacion tributaria"
+            />
+          </label>
+          <label className="text-xs">
+            Telefono
+            <input
+              value={form.telefono}
+              onChange={(e) => setForm((p) => ({ ...p, telefono: e.target.value }))}
+              className="mt-1 ui-input"
+              placeholder="Telefono de contacto"
+            />
+          </label>
+          <label className="text-xs">
+            Departamento
+            <input
+              value={form.departamento}
+              onChange={(e) => setForm((p) => ({ ...p, departamento: e.target.value }))}
+              className="mt-1 ui-input"
+              placeholder="Departamento"
+            />
+          </label>
+          <label className="text-xs">
+            Ciudad
+            <input
+              value={form.ciudad}
+              onChange={(e) => setForm((p) => ({ ...p, ciudad: e.target.value }))}
+              className="mt-1 ui-input"
+              placeholder="Ciudad"
+            />
+          </label>
+          <label className="text-xs md:col-span-2">
+            Direccion
+            <input
+              value={form.direccion}
+              onChange={(e) => setForm((p) => ({ ...p, direccion: e.target.value }))}
+              className="mt-1 ui-input"
+              placeholder="Direccion de la empresa"
             />
           </label>
           <label className="text-xs">

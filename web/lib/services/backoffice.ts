@@ -19,6 +19,14 @@ async function one<T extends QueryResultRow>(client: PoolClient, sql: string, va
   return r.rows[0] ?? null;
 }
 
+async function ensureEmpresaSchema(client?: PoolClient) {
+  const runner = client?.query.bind(client) ?? query;
+  await runner("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS telefono TEXT");
+  await runner("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS departamento TEXT");
+  await runner("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS ciudad TEXT");
+  await runner("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS direccion TEXT");
+}
+
 export async function ensureBillingGraceSchema() {
   await runInTransaction(async (client) => {
     await client.query(`
@@ -459,9 +467,14 @@ export async function backofficeClean() {
 }
 
 export async function getEmpresaCards() {
+  await ensureEmpresaSchema();
   const r = await query<{
     empresa_id: string;
     empresa_nombre: string;
+    telefono: string | null;
+    departamento: string | null;
+    ciudad: string | null;
+    direccion: string | null;
     owner_user_id: string | null;
     owner_nombre: string | null;
     owner_email: string | null;
@@ -476,6 +489,10 @@ export async function getEmpresaCards() {
     SELECT
       e.id::text AS empresa_id,
       e.nombre AS empresa_nombre,
+      e.telefono,
+      e.departamento,
+      e.ciudad,
+      e.direccion,
       owner.usuario_id::text AS owner_user_id,
       u.nombre AS owner_nombre,
       u.email AS owner_email,
@@ -500,7 +517,12 @@ export async function getEmpresaCards() {
       SELECT *
       FROM billing.suscripciones s
       WHERE s.empresa_id = e.id
-      ORDER BY (s.estado = 'ACTIVA'::billing.estado_suscripcion) DESC, s.updated_at DESC
+      ORDER BY
+        (s.estado = 'ACTIVA'::billing.estado_suscripcion) DESC,
+        COALESCE(s.periodo_actual_fin, s.fecha_fin, s.periodo_actual_inicio, s.fecha_inicio) DESC,
+        COALESCE(s.periodo_actual_inicio, s.fecha_inicio) DESC,
+        s.updated_at DESC,
+        s.created_at DESC
       LIMIT 1
     ) s ON true
     LEFT JOIN billing.planes p ON p.id = s.plan_id
@@ -556,9 +578,14 @@ export async function getBackofficeLookups() {
 
 export async function saveEmpresaWithOwner(payload: Record<string, unknown>) {
   return runInTransaction(async (client) => {
+    await ensureEmpresaSchema(client);
     const ownerUserId = requireUuid(payload.owner_user_id, "owner_user_id");
     const nombre = requireString(payload.nombre, "nombre");
     const nit = payload.nit ? requireString(payload.nit, "nit") : null;
+    const telefono = payload.telefono ? requireString(payload.telefono, "telefono") : null;
+    const departamento = payload.departamento ? requireString(payload.departamento, "departamento") : null;
+    const ciudad = payload.ciudad ? requireString(payload.ciudad, "ciudad") : null;
+    const direccion = payload.direccion ? requireString(payload.direccion, "direccion") : null;
     const timezone = requireString(payload.timezone ?? "UTC", "timezone");
     const activa = payload.activa === undefined ? true : Boolean(payload.activa);
 
@@ -570,17 +597,17 @@ export async function saveEmpresaWithOwner(payload: Record<string, unknown>) {
       empresaId = requireUuid(payload.id, "id");
       await client.query(
         `UPDATE core.empresas
-            SET nombre = $1, nit = $2, timezone = $3, activa = $4, updated_at = now()
-          WHERE id = $5`,
-        [nombre, nit, timezone, activa, empresaId],
+            SET nombre = $1, nit = $2, telefono = $3, departamento = $4, ciudad = $5, direccion = $6, timezone = $7, activa = $8, updated_at = now()
+          WHERE id = $9`,
+        [nombre, nit, telefono, departamento, ciudad, direccion, timezone, activa, empresaId],
       );
     } else {
       const created = await one<{ id: string }>(
         client,
-        `INSERT INTO core.empresas (nombre, nit, timezone, activa)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO core.empresas (nombre, nit, telefono, departamento, ciudad, direccion, timezone, activa)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
-        [nombre, nit, timezone, activa],
+        [nombre, nit, telefono, departamento, ciudad, direccion, timezone, activa],
       );
       if (!created) throw new AppError(500, "INTERNAL_ERROR", "Failed to create company");
       empresaId = created.id;

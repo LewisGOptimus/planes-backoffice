@@ -15,6 +15,13 @@ async function ensureProductoSchema() {
   await query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS descripcion_operativa TEXT");
 }
 
+async function ensureEmpresaSchema() {
+  await query("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS telefono TEXT");
+  await query("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS departamento TEXT");
+  await query("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS ciudad TEXT");
+  await query("ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS direccion TEXT");
+}
+
 async function ensureBillingGraceSchema() {
   await query(`
     DO $$
@@ -659,6 +666,9 @@ export async function GET(request: Request, context: RouteContext) {
     if (resource === "productos") {
       await ensureProductoSchema();
     }
+    if (resource === "empresas") {
+      await ensureEmpresaSchema();
+    }
     if (resource === "suscripciones" || resource === "politicas-cobro" || resource === "cobro-eventos") {
       await ensureBillingGraceSchema();
     }
@@ -686,6 +696,9 @@ export async function POST(request: Request, context: RouteContext) {
     if (resource === "workflows") throw new AppError(404, "NOT_FOUND", "Workflows disabled");
     if (resource === "productos") {
       await ensureProductoSchema();
+    }
+    if (resource === "empresas") {
+      await ensureEmpresaSchema();
     }
     if (resource === "suscripciones" || resource === "politicas-cobro" || resource === "cobro-eventos") {
       await ensureBillingGraceSchema();
@@ -727,6 +740,9 @@ export async function PATCH(request: Request, context: RouteContext) {
     if (!config) throw new AppError(404, "NOT_FOUND", "Resource not found");
     if (resource === "productos") {
       await ensureProductoSchema();
+    }
+    if (resource === "empresas") {
+      await ensureEmpresaSchema();
     }
     if (resource === "suscripciones" || resource === "politicas-cobro" || resource === "cobro-eventos") {
       await ensureBillingGraceSchema();

@@ -23,6 +23,7 @@ const SIDEBAR_SECTIONS: { title: string; items: SidebarItem[] }[] = [
     title: "Admin tools",
     items: [
       { href: "/backoffice", label: "BACKOFFICE", icon: "dashboard" },
+      { href: "/trazabilidad-empresas", label: "Trazabilidad Empresas", icon: "file" },
     ],
   },
   {

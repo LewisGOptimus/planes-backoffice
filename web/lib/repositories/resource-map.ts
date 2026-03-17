@@ -11,7 +11,7 @@ const core: TableConfig[] = [
   {
     resource: "empresas",
     tableName: "core.empresas",
-    columns: ["id", "nombre", "nit", "timezone", "activa", "created_at", "updated_at"],
+    columns: ["id", "nombre", "nit", "telefono", "departamento", "ciudad", "direccion", "timezone", "activa", "created_at", "updated_at"],
     requiredOnCreate: ["nombre"],
     idKeys: [{ name: "id", kind: "uuid" }],
   },
