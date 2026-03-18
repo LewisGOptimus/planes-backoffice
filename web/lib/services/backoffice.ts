@@ -519,7 +519,7 @@ export async function getEmpresaCards() {
       WHERE s.empresa_id = e.id
       ORDER BY
         (s.estado = 'ACTIVA'::billing.estado_suscripcion) DESC,
-        COALESCE(s.periodo_actual_fin, s.fecha_fin, s.periodo_actual_inicio, s.fecha_inicio) DESC,
+        COALESCE(s.periodo_actual_fin, s.periodo_actual_inicio, s.fecha_inicio) DESC,
         COALESCE(s.periodo_actual_inicio, s.fecha_inicio) DESC,
         s.updated_at DESC,
         s.created_at DESC

@@ -40,6 +40,8 @@ type SuscripcionRow = {
   precio_plan_id: string | null;
   billing_cycle: string | null;
   estado: string | null;
+  fecha_inicio?: string | null;
+  periodo_actual_inicio?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
   periodo_actual_fin?: string | null;
@@ -90,14 +92,26 @@ type SubscriptionPlanHistoryRow = {
 type SubscriptionBillingRow = {
   factura_id: string;
   fecha_emision: string;
+  fecha_vencimiento?: string | null;
   total: string | number;
   estado: string;
+};
+
+type FacturaRow = {
+  id: string;
+  suscripcion_id: string | null;
+  fecha_emision: string | null;
+  fecha_vencimiento: string | null;
+  estado: string | null;
+  total: string | number | null;
 };
 
 type SubscriptionHistoryPayload = {
   history: SubscriptionPlanHistoryRow[];
   invoices: SubscriptionBillingRow[];
 };
+
+type PaymentComplianceState = "AL_DIA" | "PENDIENTE" | "VENCIDO" | "SIN_FACTURA" | "NO_APLICA";
 
 type HistoryEvent = {
   key: string;
@@ -131,11 +145,19 @@ type TraceRow = {
   direccion: string;
   billing_cycle: string;
   plan_cost: string;
+  periodo_actual_inicio: string | null;
+  cumplimiento_mensual: PaymentComplianceState;
+  cumplimiento_factura_id: string | null;
+  cumplimiento_factura_estado: string | null;
+  cumplimiento_factura_emision: string | null;
+  cumplimiento_factura_vencimiento: string | null;
+  cumplimiento_factura_total: string | number | null;
   plan_items: PlanItemView[];
   additional_items: PlanItemView[];
 };
 
 type KpiFilter = "TODOS" | "ACTIVAS" | "POR_VENCER_3" | "INACTIVAS";
+type PaymentKpiFilter = "TODOS" | "AL_DIA" | "PENDIENTE" | "VENCIDO" | "SIN_FACTURA";
 
 function daysUntil(value: string | null): number | null {
   if (!value) return null;
@@ -173,11 +195,50 @@ function subscriptionBadge(value: TraceRow["estado_suscripcion_vista"]) {
   return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${styles}`}>{value}</span>;
 }
 
+function paymentBadge(value: PaymentComplianceState) {
+  const styles = {
+    AL_DIA: "bg-emerald-100 text-emerald-700",
+    PENDIENTE: "bg-amber-100 text-amber-700",
+    VENCIDO: "bg-red-100 text-red-700",
+    SIN_FACTURA: "bg-slate-200 text-slate-700",
+    NO_APLICA: "bg-slate-100 text-slate-500",
+  }[value];
+  return <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${styles}`}>{value}</span>;
+}
+
+function billingCycleLabel(value: string | null | undefined): "Mensual" | "Anual" | null {
+  const normalized = String(value ?? "").toUpperCase();
+  if (!normalized || normalized === "-") return null;
+  if (normalized.includes("ANUAL") || normalized.includes("YEAR")) return "Anual";
+  if (normalized.includes("MENS") || normalized.includes("MONTH")) return "Mensual";
+  return null;
+}
+
+function toDateOnly(value: string | null | undefined): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match) return match[1];
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().slice(0, 10);
+}
+
+function isWithinPeriod(date: string, from: string, to: string) {
+  return date >= from && date <= to;
+}
+
+function isPaidInvoiceStatus(value: string) {
+  const state = String(value ?? "").toUpperCase();
+  return state === "PAGADA" || state === "PAGADO" || state === "COBRADA";
+}
+
 export default function TrazabilidadEmpresasPage() {
   const [rows, setRows] = useState<TraceRow[]>([]);
   const [statusFilter, setStatusFilter] = useState<"TODOS" | TraceRow["estado_certificado"]>("TODOS");
   const [subscriptionFilter, setSubscriptionFilter] = useState<"TODOS" | TraceRow["estado_suscripcion_vista"]>("TODOS");
   const [kpiFilter, setKpiFilter] = useState<KpiFilter>("TODOS");
+  const [paymentKpiFilter, setPaymentKpiFilter] = useState<PaymentKpiFilter>("TODOS");
   const [search, setSearch] = useState("");
   const [selectedPlanRow, setSelectedPlanRow] = useState<TraceRow | null>(null);
   const [planModalOpen, setPlanModalOpen] = useState(false);
@@ -187,16 +248,17 @@ export default function TrazabilidadEmpresasPage() {
 
   const refresh = async () => {
     try {
-      const [empresasRes, cardsRes, suscripcionesRes, itemsRes, preciosPlanesRes, productosRes, lookupsRes] = await Promise.all([
+      const [empresasRes, cardsRes, suscripcionesRes, itemsRes, facturasRes, preciosPlanesRes, productosRes, lookupsRes] = await Promise.all([
         fetchJson<EmpresaBase[]>("/api/v1/empresas"),
         fetchJson<EmpresaCard[]>("/api/backoffice/empresas/cards"),
         fetchJson<SuscripcionRow[]>("/api/v1/suscripciones"),
         fetchJson<ItemSuscripcionRow[]>("/api/v1/items-suscripcion"),
+        fetchJson<FacturaRow[]>("/api/v1/facturas"),
         fetchJson<PrecioPlanRow[]>("/api/v1/precios-planes"),
         fetchJson<ProductoRow[]>("/api/v1/productos"),
         fetchJson<Lookup>("/api/backoffice/lookups"),
       ]);
-      if (!isSuccess(empresasRes) || !isSuccess(cardsRes) || !isSuccess(suscripcionesRes) || !isSuccess(itemsRes) || !isSuccess(preciosPlanesRes) || !isSuccess(productosRes) || !isSuccess(lookupsRes)) {
+      if (!isSuccess(empresasRes) || !isSuccess(cardsRes) || !isSuccess(suscripcionesRes) || !isSuccess(itemsRes) || !isSuccess(facturasRes) || !isSuccess(preciosPlanesRes) || !isSuccess(productosRes) || !isSuccess(lookupsRes)) {
         toast.error("No se pudo cargar la trazabilidad de empresas.");
         return;
       }
@@ -217,6 +279,14 @@ export default function TrazabilidadEmpresasPage() {
         const list = itemsBySuscripcion.get(key) ?? [];
         list.push(it);
         itemsBySuscripcion.set(key, list);
+      });
+      const facturasBySuscripcion = new Map<string, FacturaRow[]>();
+      facturasRes.data.forEach((factura) => {
+        const subId = String(factura.suscripcion_id ?? "").trim();
+        if (!subId) return;
+        const list = facturasBySuscripcion.get(subId) ?? [];
+        list.push(factura);
+        facturasBySuscripcion.set(subId, list);
       });
 
       const sortSubscriptions = (list: SuscripcionRow[]) =>
@@ -253,6 +323,7 @@ export default function TrazabilidadEmpresasPage() {
         const subItems = sub ? itemsBySuscripcion.get(String(sub.id)) ?? [] : [];
         const planItems = subItems.filter((it) => String(it.origen ?? "").toUpperCase() === "PLAN").map(itemToView);
         const additionalItems = subItems.filter((it) => String(it.origen ?? "").toUpperCase() !== "PLAN").map(itemToView);
+        const subscriptionStart = sub?.periodo_actual_inicio ?? sub?.fecha_inicio ?? null;
         const subscriptionEnd = sub?.periodo_actual_fin ?? sub?.fecha_fin ?? card?.periodo_fin ?? null;
         const certificateEnd = subscriptionEnd ?? card?.periodo_fin ?? null;
         const subscriptionDays = daysUntil(subscriptionEnd);
@@ -268,6 +339,38 @@ export default function TrazabilidadEmpresasPage() {
           (subscriptionDays != null && subscriptionDays >= 0 && subscriptionDays <= 3) ||
           (certificateDays != null && certificateDays >= 0 && certificateDays <= 3);
         const hasSubscription = Boolean(sub?.id);
+        const subscriptionInvoices = sub?.id ? facturasBySuscripcion.get(String(sub.id)) ?? [] : [];
+        const normalizedStart = toDateOnly(subscriptionStart);
+        const normalizedEnd = toDateOnly(subscriptionEnd);
+        const currentPeriodInvoices =
+          normalizedStart && normalizedEnd
+            ? subscriptionInvoices.filter((invoice) => {
+                const invoiceDate = toDateOnly(invoice.fecha_emision);
+                if (!invoiceDate) return false;
+                return isWithinPeriod(invoiceDate, normalizedStart, normalizedEnd);
+              })
+            : subscriptionInvoices;
+        const sortedCurrentPeriodInvoices = [...currentPeriodInvoices].sort((a, b) => {
+          const aDate = toDateOnly(a.fecha_emision);
+          const bDate = toDateOnly(b.fecha_emision);
+          if (aDate !== bDate) return bDate.localeCompare(aDate);
+          return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+        });
+        const representativeInvoice = sortedCurrentPeriodInvoices[0] ?? null;
+        const representativeInvoiceStatus = String(representativeInvoice?.estado ?? "").toUpperCase();
+        const effectiveDueDate = toDateOnly(representativeInvoice?.fecha_vencimiento) || normalizedEnd;
+        let paymentCompliance: PaymentComplianceState = "NO_APLICA";
+        if (hasSubscription) {
+          if (!representativeInvoice) {
+            paymentCompliance = "SIN_FACTURA";
+          } else if (isPaidInvoiceStatus(representativeInvoiceStatus)) {
+            paymentCompliance = "AL_DIA";
+          } else if ((daysUntil(effectiveDueDate) ?? 0) < 0) {
+            paymentCompliance = "VENCIDO";
+          } else {
+            paymentCompliance = "PENDIENTE";
+          }
+        }
         const subscriptionVisualState: TraceRow["estado_suscripcion_vista"] =
           !hasSubscription ? "SIN_SUSCRIPCION" : isSuspendedByExpiry ? "SUSPENDIDO" : isExpiringSoon ? "POR_VENCER" : "ACTIVA";
         const empresaEstado: TraceRow["estado_empresa"] =
@@ -306,6 +409,13 @@ export default function TrazabilidadEmpresasPage() {
           direccion: card?.direccion ?? "-",
           billing_cycle: cycleLabel,
           plan_cost: planCost,
+          periodo_actual_inicio: subscriptionStart,
+          cumplimiento_mensual: paymentCompliance,
+          cumplimiento_factura_id: representativeInvoice?.id ?? null,
+          cumplimiento_factura_estado: representativeInvoiceStatus || null,
+          cumplimiento_factura_emision: representativeInvoice?.fecha_emision ?? null,
+          cumplimiento_factura_vencimiento: representativeInvoice?.fecha_vencimiento ?? null,
+          cumplimiento_factura_total: representativeInvoice?.total ?? null,
           plan_items: planItems,
           additional_items: additionalItems,
         };
@@ -332,14 +442,15 @@ export default function TrazabilidadEmpresasPage() {
         (kpiFilter === "ACTIVAS" && row.estado_suscripcion_vista === "ACTIVA") ||
         (kpiFilter === "INACTIVAS" && row.estado_suscripcion_vista === "SUSPENDIDO") ||
         (kpiFilter === "POR_VENCER_3" && row.estado_suscripcion_vista === "POR_VENCER");
+      const paymentKpiOk = paymentKpiFilter === "TODOS" || row.cumplimiento_mensual === paymentKpiFilter;
       const statusOk = statusFilter === "TODOS" || row.estado_certificado === statusFilter;
       const subscriptionOk = subscriptionFilter === "TODOS" || row.estado_suscripcion_vista === subscriptionFilter;
       const searchOk =
         !term ||
-        `${row.empresa} ${row.nit} ${row.plan_actual} ${row.descripcion} ${row.owner} ${row.estado_suscripcion} ${row.estado_empresa} ${row.estado_suscripcion_vista}`.toLowerCase().includes(term);
-      return kpiOk && statusOk && subscriptionOk && searchOk;
+        `${row.empresa} ${row.nit} ${row.plan_actual} ${row.descripcion} ${row.owner} ${row.estado_suscripcion} ${row.estado_empresa} ${row.estado_suscripcion_vista} ${row.cumplimiento_mensual}`.toLowerCase().includes(term);
+      return kpiOk && paymentKpiOk && statusOk && subscriptionOk && searchOk;
     });
-  }, [rows, search, statusFilter, subscriptionFilter, kpiFilter]);
+  }, [rows, search, statusFilter, subscriptionFilter, kpiFilter, paymentKpiFilter]);
 
   const activeCompanies = useMemo(() => rows.filter((r) => r.estado_suscripcion_vista === "ACTIVA").length, [rows]);
   const expiringIn3Days = useMemo(
@@ -347,6 +458,10 @@ export default function TrazabilidadEmpresasPage() {
     [rows],
   );
   const inactiveCompanies = useMemo(() => rows.filter((r) => r.estado_suscripcion_vista === "SUSPENDIDO").length, [rows]);
+  const paymentAlDiaCount = useMemo(() => rows.filter((r) => r.cumplimiento_mensual === "AL_DIA").length, [rows]);
+  const paymentPendienteCount = useMemo(() => rows.filter((r) => r.cumplimiento_mensual === "PENDIENTE").length, [rows]);
+  const paymentVencidoCount = useMemo(() => rows.filter((r) => r.cumplimiento_mensual === "VENCIDO").length, [rows]);
+  const paymentSinFacturaCount = useMemo(() => rows.filter((r) => r.cumplimiento_mensual === "SIN_FACTURA").length, [rows]);
 
   const openPlanInfo = (row: TraceRow) => {
     setSelectedPlanRow(row);
@@ -384,6 +499,33 @@ export default function TrazabilidadEmpresasPage() {
             label: "Cambió plan",
             detail: `${h.plan_nombre} (${h.billing_cycle})`,
             date: h.vigente_desde,
+          });
+        }
+      });
+      (res.data.invoices ?? []).forEach((inv) => {
+        const status = String(inv.estado ?? "").toUpperCase();
+        events.push({
+          key: `${inv.factura_id}-issued`,
+          label: "Factura emitida",
+          detail: `Factura ${inv.factura_id.slice(0, 8)} por ${inv.total}`,
+          date: inv.fecha_emision,
+        });
+        if (isPaidInvoiceStatus(status)) {
+          events.push({
+            key: `${inv.factura_id}-paid`,
+            label: "Factura pagada",
+            detail: `Factura ${inv.factura_id.slice(0, 8)} en estado ${status}`,
+            date: inv.fecha_emision,
+          });
+          return;
+        }
+        const overdueRefDate = inv.fecha_vencimiento ?? inv.fecha_emision;
+        if ((daysUntil(overdueRefDate) ?? 0) < -30) {
+          events.push({
+            key: `${inv.factura_id}-overdue`,
+            label: "Factura vencida",
+            detail: `Factura ${inv.factura_id.slice(0, 8)} pendiente por más de 30 días`,
+            date: overdueRefDate,
           });
         }
       });
@@ -437,6 +579,55 @@ export default function TrazabilidadEmpresasPage() {
         </button>
       </section>
 
+      <section className="main-card-subtle flex flex-wrap items-center gap-2 px-3 py-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">Filtro pago:</span>
+        <button
+          type="button"
+          onClick={() => setPaymentKpiFilter("TODOS")}
+          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+            paymentKpiFilter === "TODOS" ? "border-[#2563EB] bg-[#DBEAFE] text-[#1D4ED8]" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+          }`}
+        >
+          Todos
+        </button>
+        <button
+          type="button"
+          onClick={() => setPaymentKpiFilter((prev) => (prev === "AL_DIA" ? "TODOS" : "AL_DIA"))}
+          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+            paymentKpiFilter === "AL_DIA" ? "border-emerald-400 bg-emerald-100 text-emerald-800" : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
+          }`}
+        >
+          Al día ({paymentAlDiaCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setPaymentKpiFilter((prev) => (prev === "PENDIENTE" ? "TODOS" : "PENDIENTE"))}
+          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+            paymentKpiFilter === "PENDIENTE" ? "border-amber-400 bg-amber-100 text-amber-800" : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+          }`}
+        >
+          Pendiente ({paymentPendienteCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setPaymentKpiFilter((prev) => (prev === "VENCIDO" ? "TODOS" : "VENCIDO"))}
+          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+            paymentKpiFilter === "VENCIDO" ? "border-red-400 bg-red-100 text-red-800" : "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+          }`}
+        >
+          Vencido ({paymentVencidoCount})
+        </button>
+        <button
+          type="button"
+          onClick={() => setPaymentKpiFilter((prev) => (prev === "SIN_FACTURA" ? "TODOS" : "SIN_FACTURA"))}
+          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+            paymentKpiFilter === "SIN_FACTURA" ? "border-slate-400 bg-slate-200 text-slate-800" : "border-slate-200 bg-slate-100 text-slate-700 hover:bg-slate-200"
+          }`}
+        >
+          Sin factura ({paymentSinFacturaCount})
+        </button>
+      </section>
+
       <section className="main-card">
         <div className="mb-3 grid gap-2 md:grid-cols-[1fr_220px_220px]">
           <input
@@ -463,10 +654,17 @@ export default function TrazabilidadEmpresasPage() {
         <div className="mb-3 flex items-center justify-between gap-2">
           <p className="text-xs text-slate-600">
             Filtro KPI: <span className="font-semibold text-slate-800">{kpiFilter === "TODOS" ? "Ninguno" : kpiFilter === "ACTIVAS" ? "ACTIVAS" : kpiFilter === "POR_VENCER_3" ? "POR_VENCER" : "SUSPENDIDAS"}</span>
+            {" | "}
+            Filtro pago: <span className="font-semibold text-slate-800">{paymentKpiFilter === "TODOS" ? "Ninguno" : paymentKpiFilter}</span>
           </p>
-          <button type="button" className="ui-btn ui-btn-outline ui-btn-sm" onClick={() => setKpiFilter("TODOS")}>
-            Limpiar filtro KPI
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" className="ui-btn ui-btn-outline ui-btn-sm" onClick={() => setKpiFilter("TODOS")}>
+              Limpiar KPI estado
+            </button>
+            <button type="button" className="ui-btn ui-btn-outline ui-btn-sm" onClick={() => setPaymentKpiFilter("TODOS")}>
+              Limpiar KPI pago
+            </button>
+          </div>
         </div>
 
         <DataTable<TraceRow>
@@ -495,7 +693,19 @@ export default function TrazabilidadEmpresasPage() {
                 </div>
               ),
             },
-            { key: "plan_actual", header: "Plan Actual" },
+            {
+              key: "plan_actual",
+              header: "Plan Actual",
+              render: (r) => {
+                const cycle = billingCycleLabel(r.billing_cycle);
+                return (
+                  <div className="flex items-center gap-2">
+                    <span>{r.plan_actual}</span>
+                    {cycle ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{cycle}</span> : null}
+                  </div>
+                );
+              },
+            },
             {
               key: "fecha_creacion_suscripcion",
               header: "Fecha creación suscripción",
@@ -505,6 +715,11 @@ export default function TrazabilidadEmpresasPage() {
               key: "estado_suscripcion",
               header: "Estado suscripción",
               render: (r) => subscriptionBadge(r.estado_suscripcion_vista),
+            },
+            {
+              key: "cumplimiento_mensual",
+              header: "Cumplimiento mensual",
+              render: (r) => paymentBadge(r.cumplimiento_mensual),
             },
             {
               key: "fecha_vencimiento",
@@ -615,6 +830,40 @@ export default function TrazabilidadEmpresasPage() {
                 <p className="mt-1 text-sm font-semibold text-slate-900">
                   {selectedPlanRow.plan_actual || "Sin información"} | Costo: {selectedPlanRow.plan_cost || "Sin información"} | Tipo: {selectedPlanRow.billing_cycle || "Sin información"}
                 </p>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-white p-2.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Seguimiento de pago mensual</p>
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[11px] font-semibold text-slate-500">Período evaluado</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {formatDateOnly(selectedPlanRow.periodo_actual_inicio)} - {formatDateOnly(selectedPlanRow.fecha_vencimiento_suscripcion)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[11px] font-semibold text-slate-500">Estado pago período</p>
+                    <div className="mt-1">{paymentBadge(selectedPlanRow.cumplimiento_mensual)}</div>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[11px] font-semibold text-slate-500">Factura asociada</p>
+                    <p className="text-sm font-semibold text-slate-900">{selectedPlanRow.cumplimiento_factura_id ? selectedPlanRow.cumplimiento_factura_id.slice(0, 8) : "-"}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[11px] font-semibold text-slate-500">Estado factura</p>
+                    <p className="text-sm font-semibold text-slate-900">{selectedPlanRow.cumplimiento_factura_estado || "-"}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[11px] font-semibold text-slate-500">Emisión / vencimiento</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {formatDateOnly(selectedPlanRow.cumplimiento_factura_emision)} - {formatDateOnly(selectedPlanRow.cumplimiento_factura_vencimiento)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    <p className="text-[11px] font-semibold text-slate-500">Total factura</p>
+                    <p className="text-sm font-semibold text-slate-900">{selectedPlanRow.cumplimiento_factura_total ?? "-"}</p>
+                  </div>
+                </div>
               </div>
             </div>
 

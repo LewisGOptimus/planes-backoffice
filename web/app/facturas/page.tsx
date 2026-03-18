@@ -65,8 +65,8 @@ export default function FacturasPage() {
         { key: "metodo_pago", label: "Metodo", type: "select", options: [{ value: "MANUAL", label: "MANUAL" }, { value: "PASARELA", label: "PASARELA" }] },
       ]}
       columns={[
-        { key: "empresa_id", label: "Empresa" },
-        { key: "suscripcion_id", label: "Suscripcion" },
+        { key: "empresa_id", label: "Empresa", options: lookups.empresas },
+        { key: "suscripcion_id", label: "Suscripcion", options: lookups.suscripciones },
         { key: "fecha_emision", label: "Fecha" },
         { key: "subtotal", label: "Subtotal" },
         { key: "descuento_monto", label: "Descuento" },

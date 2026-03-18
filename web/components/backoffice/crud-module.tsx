@@ -21,6 +21,7 @@ type Column = {
   key: string;
   label: string;
   badge?: boolean;
+  options?: Array<{ value: string; label: string }>;
 };
 
 type Row = Record<string, unknown> & { id?: string };
@@ -35,12 +36,13 @@ type Props = {
   onCreateRef?: (openCreate: () => void) => void;
 };
 
-function formatCell(value: unknown, badge?: boolean, key?: string) {
+function formatCell(value: unknown, badge?: boolean, key?: string, options?: Array<{ value: string; label: string }>) {
+  const mapped = options?.find((option) => option.value === String(value ?? ""))?.label;
   const text = key && looksLikeDateField(key)
     ? formatDateOnly(value)
     : key && looksLikeMoneyField(key)
       ? formatMoney(value)
-      : String(value ?? "-");
+      : mapped ?? String(value ?? "-");
   if (!badge) return text;
   return <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{text}</span>;
 }
@@ -67,6 +69,14 @@ export function CrudModule({
   }, [initial]);
 
   const orderedRows = useMemo(() => [...rows], [rows]);
+  const selectOptionsByKey = useMemo(
+    () =>
+      fields.reduce<Record<string, Array<{ value: string; label: string }>>>((acc, field) => {
+        if (field.type === "select" && field.options) acc[field.key] = field.options;
+        return acc;
+      }, {}),
+    [fields],
+  );
 
   const tableColumns: DataTableColumn<Row>[] = [
       {
@@ -81,7 +91,7 @@ export function CrudModule({
         header: c.label,
         headerClassName: "text-white bg-[var(--color-primary)]",
         cellClassName: "text-slate-700",
-        render: (row) => formatCell(row[c.key], c.badge, c.key),
+        render: (row) => formatCell(row[c.key], c.badge, c.key, c.options ?? selectOptionsByKey[c.key]),
       })),
       {
         key: "__actions",

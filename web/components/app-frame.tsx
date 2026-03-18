@@ -149,6 +149,15 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isMobileSidebarOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isMobileSidebarOpen]);
+
   const navItemClass = (active: boolean) =>
     `group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all ${
       active
@@ -262,7 +271,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
         {isMobileSidebarOpen && (
           <div className="fixed inset-0 z-30 bg-slate-900/45 backdrop-blur-[1px] md:hidden" onClick={() => setIsMobileSidebarOpen(false)}>
             <aside
-              className="absolute left-0 top-[72px] h-[calc(100vh-72px)] w-72 border-r border-[#D9E5F6] bg-[linear-gradient(180deg,#F8FBFF_0%,#F3F7FC_45%,#F7F9FE_100%)] shadow-2xl"
+              className="fixed inset-y-0 left-0 w-72 border-r border-[#D9E5F6] bg-[linear-gradient(180deg,#F8FBFF_0%,#F3F7FC_45%,#F7F9FE_100%)] pt-[72px] shadow-2xl"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex h-full flex-col">
@@ -302,7 +311,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
-        <aside className="hidden md:fixed md:left-0 md:top-[72px] md:z-30 md:h-[calc(100vh-72px)] md:w-[17rem] md:border-r md:border-[#D9E5F6] md:bg-[linear-gradient(180deg,#F8FBFF_0%,#F3F7FC_45%,#F7F9FE_100%)] md:block">
+        <aside className="hidden md:fixed md:inset-y-0 md:left-0 md:z-30 md:w-[17rem] md:border-r md:border-[#D9E5F6] md:bg-[linear-gradient(180deg,#F8FBFF_0%,#F3F7FC_45%,#F7F9FE_100%)] md:pt-[72px] md:block">
           <div className="flex h-full flex-col">
             <nav className="flex-1 overflow-y-auto px-4 py-5">
               {SIDEBAR_SECTIONS.map((section) => (
