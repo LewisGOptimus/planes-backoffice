@@ -509,7 +509,7 @@ export default function PlanesPage() {
               header: "Pricing",
               render: (row) => (
                 <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-semibold">
-                  {String((row as any).pricing_mode ?? "BUNDLE")}
+                  {String((row as Record<string, unknown>).pricing_mode ?? "BUNDLE")}
                 </span>
               ),
             },
@@ -517,14 +517,14 @@ export default function PlanesPage() {
               key: "precio",
               header: "Precio",
               render: (row) =>
-                planPriceLabelById.get(String((row as any).id)) ?? "INVÁLIDO",
+                planPriceLabelById.get(String((row as Record<string, unknown>).id)) ?? "INVÁLIDO",
             },
             {
               key: "periodo",
               header: "Ciclo default",
               render: (row) => (
                 <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 font-semibold">
-                  {String((row as any).periodo)}
+                  {String((row as Record<string, unknown>).periodo)}
                 </span>
               ),
             },
@@ -532,7 +532,7 @@ export default function PlanesPage() {
               key: "activo",
               header: "Estado",
               render: (row) => {
-                const activo = isActivo((row as any).activo);
+                const activo = isActivo((row as Record<string, unknown>).activo);
                 return (
                   <Badge
                     text={activo ? "ACTIVO" : "INACTIVO"}
@@ -547,19 +547,19 @@ export default function PlanesPage() {
               render: (row) => (
                 <div className="flex flex-wrap gap-1">
                   <button
-                    onClick={() => setSelectedPlan(String((row as any).id))}
+                    onClick={() => setSelectedPlan(String((row as Record<string, unknown>).id))}
                     className="ui-btn ui-btn-outline ui-btn-sm"
                   >
                     Gestionar
                   </button>
                   <button
-                    onClick={() => openEdit(row as any)}
+                    onClick={() => openEdit(row as Record<string, unknown>)}
                     className="ui-btn ui-btn-primary ui-btn-sm"
                   >
                     Editar
                   </button>
                   <button
-                    onClick={() => deletePlan(String((row as any).id))}
+                    onClick={() => deletePlan(String((row as Record<string, unknown>).id))}
                     className="ui-btn ui-btn-danger ui-btn-sm"
                   >
                     Eliminar

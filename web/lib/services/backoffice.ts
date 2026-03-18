@@ -1206,7 +1206,6 @@ export async function createSubscriptionWithOptions(payload: Record<string, unkn
       [empresaId],
     );
     if (exists) throw new AppError(409, "CONFLICT", "La empresa ya tiene una suscripcion activa");
-
     const charge = await resolveSubscriptionCharge(client, planId, billingCycle, fechaInicio);
     const fin = addMonths(fechaInicio, PERIOD_MONTHS[billingCycle] ?? 1);
 

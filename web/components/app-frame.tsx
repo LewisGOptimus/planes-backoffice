@@ -46,6 +46,7 @@ const SIDEBAR_SECTIONS: { title: string; items: SidebarItem[] }[] = [
     items: [
       { href: "/operaciones", label: "Operaciones", icon: "gear" },
       { href: "/suscripciones", label: "Suscripciones", icon: "calendar" },
+      { href: "/contratos", label: "Contratos", icon: "file" },
       { href: "/facturas", label: "Facturas", icon: "wallet" },
       { href: "/prorrateos", label: "Prorrateos", icon: "file" },
     ],

@@ -15,6 +15,8 @@ type Field = {
   label: string;
   type?: FieldType;
   options?: Array<{ value: string; label: string }>;
+  getOptions?: (form: Record<string, string>) => Array<{ value: string; label: string }>;
+  onChange?: (nextValue: string, nextForm: Record<string, string>) => Record<string, string> | void;
 };
 
 type Column = {
@@ -233,12 +235,31 @@ export function CrudModule({
             <label key={f.key} className="text-xs text-slate-700">
               {f.label}
               {f.type === "select" ? (
-                <select value={form[f.key] ?? ""} onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))} className="mt-1 ui-input">
+                <select
+                  value={form[f.key] ?? ""}
+                  onChange={(e) =>
+                    setForm((p) => {
+                      const base = { ...p, [f.key]: e.target.value };
+                      return f.onChange?.(e.target.value, base) ?? base;
+                    })
+                  }
+                  className="mt-1 ui-input"
+                >
                   <option value="">Seleccionar...</option>
-                  {(f.options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  {(f.getOptions ? f.getOptions(form) : (f.options ?? [])).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               ) : (
-                <input type={f.type ?? "text"} value={form[f.key] ?? ""} onChange={(e) => setForm((p) => ({ ...p, [f.key]: e.target.value }))} className="mt-1 ui-input" />
+                <input
+                  type={f.type ?? "text"}
+                  value={form[f.key] ?? ""}
+                  onChange={(e) =>
+                    setForm((p) => {
+                      const base = { ...p, [f.key]: e.target.value };
+                      return f.onChange?.(e.target.value, base) ?? base;
+                    })
+                  }
+                  className="mt-1 ui-input"
+                />
               )}
             </label>
           ))}

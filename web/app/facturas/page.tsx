@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { CrudModule } from "@/components/backoffice/crud-module";
 import { fetchJson, isSuccess } from "@/lib/client/api";
 import toast from "react-hot-toast";
@@ -11,19 +11,40 @@ type Lookups = {
   suscripciones: Array<{ value: string; label: string }>;
 };
 
+type SubscriptionRow = {
+  id: string;
+  empresa_id: string;
+};
+
 export default function FacturasPage() {
   const [lookups, setLookups] = useState<Lookups>({ empresas: [], suscripciones: [] });
+  const [subscriptions, setSubscriptions] = useState<SubscriptionRow[]>([]);
   const [openCreate, setOpenCreate] = useState<(() => void) | null>(null);
   const handleCreateRef = useCallback((fn: () => void) => {
     setOpenCreate(() => fn);
   }, []);
 
+  const subscriptionCompanyById = useMemo(
+    () =>
+      subscriptions.reduce<Record<string, string>>((acc, subscription) => {
+        acc[subscription.id] = subscription.empresa_id;
+        return acc;
+      }, {}),
+    [subscriptions],
+  );
+
   useEffect(() => {
     const t = setTimeout(async () => {
       try {
-        const res = await fetchJson<Lookups>("/api/backoffice/lookups");
-        if (isSuccess(res)) {
-          setLookups({ empresas: res.data.empresas, suscripciones: res.data.suscripciones });
+        const [lookupsRes, subscriptionsRes] = await Promise.all([
+          fetchJson<Lookups>("/api/backoffice/lookups"),
+          fetchJson<SubscriptionRow[]>("/api/v1/suscripciones"),
+        ]);
+        if (isSuccess(lookupsRes)) {
+          setLookups({ empresas: lookupsRes.data.empresas, suscripciones: lookupsRes.data.suscripciones });
+        }
+        if (isSuccess(subscriptionsRes)) {
+          setSubscriptions(subscriptionsRes.data);
         }
       } catch {
         toast.error("Error de red al cargar empresas y suscripciones.");
@@ -51,8 +72,23 @@ export default function FacturasPage() {
       hideModuleHeader
       onCreateRef={handleCreateRef}
       fields={[
-        { key: "empresa_id", label: "Empresa", type: "select", options: lookups.empresas },
-        { key: "suscripcion_id", label: "Suscripcion", type: "select", options: lookups.suscripciones },
+        {
+          key: "empresa_id",
+          label: "Empresa",
+          type: "select",
+          options: lookups.empresas,
+          onChange: (_nextValue, nextForm) => ({ ...nextForm, suscripcion_id: "" }),
+        },
+        {
+          key: "suscripcion_id",
+          label: "Suscripcion",
+          type: "select",
+          getOptions: (form) => {
+            const companyId = String(form.empresa_id ?? "");
+            if (!companyId) return [];
+            return lookups.suscripciones.filter((subscription) => subscriptionCompanyById[subscription.value] === companyId);
+          },
+        },
         { key: "fecha_emision", label: "Fecha emision", type: "date" },
         { key: "fecha_vencimiento", label: "Fecha vencimiento", type: "date" },
         { key: "subtotal", label: "Subtotal", type: "number" },

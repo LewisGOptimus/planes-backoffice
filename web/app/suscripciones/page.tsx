@@ -995,40 +995,40 @@ export default function SuscripcionesPage() {
             {
               key: "empresa",
               header: "Empresa",
-              render: (r) => companyLabel(String((r as any).empresa_id)),
+              render: (r) => companyLabel(String((r as Record<string, unknown>).empresa_id)),
             },
             {
               key: "plan",
               header: "Plan",
-              render: (r) => planLabel(String((r as any).plan_id)),
+              render: (r) => planLabel(String((r as Record<string, unknown>).plan_id)),
             },
             {
               key: "estado",
               header: "Estado",
-              render: (r) => badge(String((r as any).estado)),
+              render: (r) => badge(String((r as Record<string, unknown>).estado)),
             },
             {
               key: "operativo",
               header: "Operativo",
               render: (r) =>
-                badge(String((r as any).operational_status ?? "EN_SERVICIO")),
+                badge(String((r as Record<string, unknown>).operational_status ?? "EN_SERVICIO")),
             },
             {
               key: "prorroga",
               header: "Prorroga",
               render: (r) =>
-                `${String((r as any).grace_days_granted ?? 0)} dias`,
+                `${String((r as Record<string, unknown>).grace_days_granted ?? 0)} dias`,
             },
             {
               key: "periodo",
               header: "Periodo",
               render: (r) =>
-                badge(String((r as any).billing_cycle ?? (r as any).periodo)),
+                badge(String((r as Record<string, unknown>).billing_cycle ?? (r as Record<string, unknown>).periodo)),
             },
             {
               key: "fin_ciclo",
               header: "Fin ciclo",
-              render: (r) => formatDateOnly((r as any).periodo_actual_fin),
+              render: (r) => formatDateOnly((r as Record<string, unknown>).periodo_actual_fin),
             },
             {
               key: "acciones",
@@ -1037,7 +1037,7 @@ export default function SuscripcionesPage() {
                 <div className="flex flex-wrap gap-1">
                   <button
                     onClick={() => {
-                      setSelected(String((r as any).id));
+                      setSelected(String((r as Record<string, unknown>).id));
                       setAutoInvoiceOnAddItem(false);
                       setAddItemDiscount(EMPTY_DISCOUNT);
                       setEntitlementSearch("");
@@ -1049,14 +1049,14 @@ export default function SuscripcionesPage() {
                   </button>
                   <button
                     onClick={() => {
-                      setSelected(String((r as any).id));
+                      setSelected(String((r as Record<string, unknown>).id));
                       setHistoryModalOpen(true);
                     }}
                     className="ui-btn ui-btn-outline ui-btn-sm"
                   >
                     Historial
                   </button>
-                  {isExpiredSubscription((r as any).periodo_actual_fin) && (
+                  {isExpiredSubscription((r as Record<string, unknown>).periodo_actual_fin) && (
                     <button
                       onClick={() => openRenewModal(r)}
                       className="ui-btn ui-btn-primary ui-btn-sm"

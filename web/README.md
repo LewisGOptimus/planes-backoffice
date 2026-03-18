@@ -34,3 +34,18 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Arquitectura Hexagonal (incremental)
+
+- El dominio de `suscripciones` vive en `src/modules/suscripciones` con capas `domain`, `application`, `infrastructure` y `adapters`.
+- Las rutas en `app/api/*` actuan como adaptadores de entrada y no deben contener reglas de negocio complejas.
+- Las reglas de estilo y mantenibilidad estan en `docs/CODE_STYLE_GUIDE.md`.
+
+## Migraciones SQL
+
+- Las migraciones versionadas viven en `../database/migrations`.
+- Ejecuta migraciones con:
+
+```bash
+npm run db:migrate
+```
