@@ -5,6 +5,13 @@ import { requireDate, requireNumberLike, requireString, requireUuid } from "@/li
 import { runInTransaction } from "@/lib/sql/transactions";
 import { syncPlanEntitlementsToSubscription } from "@/lib/services/entitlements";
 import { computeInvoiceDiscountTotals, parseBooleanLike, parseDiscountInput } from "@/lib/services/invoice-discounts";
+import { ensureProductCatalogSchema } from "@/lib/services/product-catalog";
+import {
+  createDeferredInstallmentPlan,
+  ensureDeferredInstallmentSchema,
+  listSubscriptionDeferredInstallments,
+  syncDeferredInstallmentState,
+} from "@/lib/services/deferred-installments";
 
 const PERIOD_MONTHS: Record<string, number> = { MENSUAL: 1, TRIMESTRAL: 3, ANUAL: 12 };
 
@@ -214,38 +221,6 @@ export async function ensureBillingGraceSchema() {
       )
     `);
     await client.query(`
-      CREATE OR REPLACE VIEW billing.v_suscripcion_adicionales_por_plan AS
-      SELECT
-        h.id::text AS historial_id,
-        h.suscripcion_id::text AS suscripcion_id,
-        h.plan_id::text AS plan_id,
-        p.nombre AS plan_nombre,
-        h.billing_cycle::text AS billing_cycle,
-        h.vigente_desde::text AS plan_vigente_desde,
-        h.vigente_hasta::text AS plan_vigente_hasta,
-        i.id::text AS item_suscripcion_id,
-        i.producto_id::text AS producto_id,
-        pr.codigo AS producto_codigo,
-        pr.nombre AS producto_nombre,
-        i.origen::text AS item_origen,
-        i.estado::text AS item_estado,
-        i.cantidad,
-        i.fecha_inicio::text AS item_fecha_inicio,
-        i.fecha_fin::text AS item_fecha_fin,
-        i.fecha_efectiva_inicio::text AS item_efectiva_inicio,
-        i.fecha_efectiva_fin::text AS item_efectiva_fin,
-        GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))::text AS solape_desde,
-        LEAST(COALESCE(h.vigente_hasta, '9999-12-31'::date), COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date))::text AS solape_hasta
-      FROM billing.suscripciones_plan_historial h
-      JOIN billing.planes p ON p.id = h.plan_id
-      JOIN billing.items_suscripcion i ON i.suscripcion_id = h.suscripcion_id
-      JOIN billing.productos pr ON pr.id = i.producto_id
-      WHERE i.origen IN ('ADDON'::billing.origen_item_suscripcion, 'LEGACY'::billing.origen_item_suscripcion, 'MANUAL'::billing.origen_item_suscripcion)
-        AND GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))
-            <= LEAST(COALESCE(h.vigente_hasta, '9999-12-31'::date), COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date))
-    `);
-
-    await client.query(`
       CREATE TABLE IF NOT EXISTS billing.politicas_cobro (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         scope TEXT NOT NULL CHECK (scope IN ('GLOBAL', 'PLAN', 'EMPRESA')),
@@ -310,19 +285,13 @@ export async function ensureBillingGraceSchema() {
         END IF;
       END $$;
     `);
+    await ensureDeferredInstallmentSchema(client);
   });
 }
 
 export async function ensureConsumableProductProfileSchema() {
   await runInTransaction(async (client) => {
-    await client.query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS unidad_consumo TEXT");
-    await client.query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS descripcion_operativa TEXT");
-    await client.query(
-      `UPDATE billing.productos
-          SET unidad_consumo = 'DOCUMENTO'
-        WHERE codigo = 'DOCS-ELECTRONICOS'
-          AND (unidad_consumo IS NULL OR btrim(unidad_consumo) = '')`,
-    );
+    await ensureProductCatalogSchema(client);
   });
 }
 
@@ -338,8 +307,7 @@ export async function backofficeSeed() {
   await ensureBillingGraceSchema();
 
   return runInTransaction(async (client) => {
-    await client.query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS unidad_consumo TEXT");
-    await client.query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS descripcion_operativa TEXT");
+    await ensureProductCatalogSchema(client);
 
     await client.query(
       `INSERT INTO common.monedas (codigo, nombre, simbolo, decimales)
@@ -351,32 +319,39 @@ export async function backofficeSeed() {
     if (!cop) throw new AppError(500, "INTERNAL_ERROR", "COP currency not available");
 
     const productos = [
-      ["CONTABILIDAD", "Contabilidad", "MODULO", "EMPRESA", false, null, null],
-      ["NOMINA", "Nomina", "MODULO", "EMPRESA", false, null, null],
-      [
-        "DOCS-ELECTRONICOS",
-        "Documentos Electronicos",
-        "CONSUMIBLE",
-        "EMPRESA",
-        true,
-        "DOCUMENTO",
-        "Pool de creditos consumibles para emision de documentos electronicos",
-      ],
-      ["SOPORTE-ANUAL", "Soporte Anual", "SERVICIO", "EMPRESA", false, null, null],
-      ["CERTIFICADO-DIGITAL", "Certificado Digital", "SERVICIO", "EMPRESA", false, null, null],
+      ["CONTABILIDAD", "Contabilidad", "MODULO", "EMPRESA", false, "PUBLIC"],
+      ["NOMINA", "Nomina", "MODULO", "EMPRESA", false, "PUBLIC"],
+      ["DOCS-ELECTRONICOS", "Documentos Electronicos", "CONSUMIBLE", "EMPRESA", true, "PUBLIC"],
+      ["SOPORTE-ANUAL", "Soporte Anual", "SERVICIO", "EMPRESA", false, "PUBLIC"],
+      ["CERTIFICADO-DIGITAL", "Certificado Digital", "SERVICIO", "EMPRESA", false, "PUBLIC"],
     ] as const;
 
     for (const p of productos) {
       await client.query(
-        `INSERT INTO billing.productos (codigo, nombre, tipo, alcance, es_consumible, unidad_consumo, descripcion_operativa, activo)
-         VALUES ($1, $2, $3::billing.tipo_producto, $4::billing.alcance_producto, $5, $6, $7, true)
+        `INSERT INTO billing.productos (
+            codigo,
+            nombre,
+            tipo,
+            alcance,
+            es_consumible,
+            visibility,
+            activo
+          )
+         VALUES (
+            $1,
+            $2,
+            $3::billing.tipo_producto,
+            $4::billing.alcance_producto,
+            $5,
+            $6::billing.product_visibility,
+            true
+          )
          ON CONFLICT (codigo) DO UPDATE
          SET nombre = EXCLUDED.nombre,
              tipo = EXCLUDED.tipo,
              alcance = EXCLUDED.alcance,
              es_consumible = EXCLUDED.es_consumible,
-             unidad_consumo = EXCLUDED.unidad_consumo,
-             descripcion_operativa = EXCLUDED.descripcion_operativa`,
+             visibility = EXCLUDED.visibility`,
         [...p],
       );
     }
@@ -416,8 +391,7 @@ export async function backofficeSeed() {
 export async function ensureCopCurrency() {
   await ensureBillingGraceSchema();
   await runInTransaction(async (client) => {
-    await client.query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS unidad_consumo TEXT");
-    await client.query("ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS descripcion_operativa TEXT");
+    await ensureProductCatalogSchema(client);
 
     const exists = await one<{ id: string }>(client, "SELECT id FROM common.monedas WHERE codigo = 'COP' LIMIT 1");
     if (!exists) {
@@ -427,13 +401,6 @@ export async function ensureCopCurrency() {
          ON CONFLICT (codigo) DO UPDATE SET nombre = EXCLUDED.nombre`,
       );
     }
-
-    await client.query(
-      `UPDATE billing.productos
-          SET unidad_consumo = 'DOCUMENTO'
-        WHERE codigo = 'DOCS-ELECTRONICOS'
-          AND (unidad_consumo IS NULL OR btrim(unidad_consumo) = '')`,
-    );
   });
   return { ok: true };
 }
@@ -546,12 +513,15 @@ export async function getEmpresaCards() {
 
 export async function getBackofficeLookups() {
   await ensureBillingGraceSchema();
+  await ensureProductCatalogSchema();
   const [empresas, planes, productos, suscripciones, usuarios, monedas, preciosPlanes, entitlements] = await Promise.all([
     query<{ id: string; nombre: string }>("SELECT id::text, nombre FROM core.empresas ORDER BY nombre"),
     query<{ id: string; nombre: string; periodo: string; pricing_mode: string }>(
       "SELECT id::text, nombre, periodo::text, pricing_mode::text FROM billing.planes ORDER BY nombre",
     ),
-    query<{ id: string; nombre: string; codigo: string }>("SELECT id::text, nombre, codigo FROM billing.productos ORDER BY nombre"),
+    query<{ id: string; nombre: string; codigo: string; visibility: string }>(
+      "SELECT id::text, nombre, codigo, visibility::text FROM billing.productos ORDER BY nombre",
+    ),
     query<{ id: string; empresa: string; plan: string }>(`
       SELECT s.id::text, e.nombre AS empresa, p.nombre AS plan
       FROM billing.suscripciones s
@@ -567,7 +537,7 @@ export async function getBackofficeLookups() {
   return {
     empresas: empresas.rows.map((x) => ({ value: x.id, label: x.nombre })),
     planes: planes.rows.map((x) => ({ value: x.id, label: `${x.nombre} (${x.pricing_mode} | default ${x.periodo})` })),
-    productos: productos.rows.map((x) => ({ value: x.id, label: `${x.nombre} (${x.codigo})` })),
+    productos: productos.rows.map((x) => ({ value: x.id, label: `${x.nombre} (${x.codigo} | ${x.visibility})` })),
     suscripciones: suscripciones.rows.map((x) => ({ value: x.id, label: `${x.empresa} | ${x.plan}` })),
     usuarios: usuarios.rows.map((x) => ({ value: x.id, label: `${x.nombre} (${x.email})` })),
     monedas: monedas.rows.map((x) => ({ value: x.id, label: x.codigo })),
@@ -845,13 +815,76 @@ export async function getSuscripcionEntitlements(suscripcionId: string) {
   return data.rows;
 }
 
+export async function getSubscriptionAddonsByPlan(subscriptionId: string) {
+  const rows = await query<{
+    historial_id: string;
+    suscripcion_id: string;
+    plan_id: string;
+    plan_nombre: string;
+    billing_cycle: string;
+    plan_vigente_desde: string;
+    plan_vigente_hasta: string | null;
+    item_suscripcion_id: string;
+    producto_id: string;
+    producto_codigo: string;
+    producto_nombre: string;
+    item_origen: string;
+    item_estado: string;
+    cantidad: number;
+    item_fecha_inicio: string;
+    item_fecha_fin: string | null;
+    item_efectiva_inicio: string | null;
+    item_efectiva_fin: string | null;
+    solape_desde: string;
+    solape_hasta: string;
+  }>(
+    `SELECT
+      h.id::text AS historial_id,
+      h.suscripcion_id::text AS suscripcion_id,
+      h.plan_id::text AS plan_id,
+      p.nombre AS plan_nombre,
+      h.billing_cycle::text AS billing_cycle,
+      h.vigente_desde::text AS plan_vigente_desde,
+      h.vigente_hasta::text AS plan_vigente_hasta,
+      i.id::text AS item_suscripcion_id,
+      i.producto_id::text AS producto_id,
+      pr.codigo AS producto_codigo,
+      pr.nombre AS producto_nombre,
+      i.origen::text AS item_origen,
+      i.estado::text AS item_estado,
+      i.cantidad,
+      i.fecha_inicio::text AS item_fecha_inicio,
+      i.fecha_fin::text AS item_fecha_fin,
+      i.fecha_efectiva_inicio::text AS item_efectiva_inicio,
+      i.fecha_efectiva_fin::text AS item_efectiva_fin,
+      GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))::text AS solape_desde,
+      LEAST(
+        COALESCE(h.vigente_hasta, '9999-12-31'::date),
+        COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date)
+      )::text AS solape_hasta
+     FROM billing.suscripciones_plan_historial h
+     JOIN billing.planes p ON p.id = h.plan_id
+     JOIN billing.items_suscripcion i ON i.suscripcion_id = h.suscripcion_id
+     JOIN billing.productos pr ON pr.id = i.producto_id
+     WHERE h.suscripcion_id = $1
+       AND i.origen IN ('ADDON'::billing.origen_item_suscripcion, 'LEGACY'::billing.origen_item_suscripcion, 'MANUAL'::billing.origen_item_suscripcion)
+       AND GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))
+           <= LEAST(
+             COALESCE(h.vigente_hasta, '9999-12-31'::date),
+             COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date)
+           )
+     ORDER BY h.vigente_desde DESC, i.fecha_inicio DESC, i.created_at DESC`,
+    [subscriptionId],
+  );
+  return rows.rows;
+}
+
 export async function getEmpresaConsumablesPool(empresaId: string) {
   const rows = await query<{
     suscripcion_id: string;
     producto_id: string;
     producto_codigo: string;
     producto_nombre: string;
-    unidad_consumo: string | null;
     comprado: number;
     consumido: number;
     restante: number;
@@ -866,7 +899,6 @@ export async function getEmpresaConsumablesPool(empresaId: string) {
       isub.producto_id::text AS producto_id,
       p.codigo AS producto_codigo,
       p.nombre AS producto_nombre,
-      p.unidad_consumo,
       COALESCE(sum(isub.cantidad), 0)::int AS comprado,
       0::int AS consumido,
       COALESCE(sum(isub.cantidad), 0)::int AS restante,
@@ -880,7 +912,7 @@ export async function getEmpresaConsumablesPool(empresaId: string) {
      JOIN billing.productos p ON p.id = isub.producto_id
      WHERE s.empresa_id = $1
        AND p.es_consumible = true
-     GROUP BY s.id, isub.producto_id, p.codigo, p.nombre, p.unidad_consumo
+     GROUP BY s.id, isub.producto_id, p.codigo, p.nombre
      ORDER BY p.nombre, s.id`,
     [empresaId],
   );
@@ -942,7 +974,10 @@ export async function getSubscriptionConsumableInvoiceLinks(subscriptionId: stri
 }
 
 export async function getSubscriptionPlanHistoryWithBilling(subscriptionId: string) {
-  const [historyRes, invoicesRes] = await Promise.all([
+  await runInTransaction(async (client) => {
+    await syncDeferredInstallmentState(client);
+  });
+  const [historyRes, invoicesRes, addonsByPlan] = await Promise.all([
     query<{
       historial_id: string;
       suscripcion_id: string;
@@ -998,11 +1033,16 @@ export async function getSubscriptionPlanHistoryWithBilling(subscriptionId: stri
        ORDER BY f.fecha_emision DESC, f.created_at DESC`,
       [subscriptionId],
     ),
+    getSubscriptionAddonsByPlan(subscriptionId),
   ]);
+  const deferred = await listSubscriptionDeferredInstallments(subscriptionId);
 
   return {
     history: historyRes.rows,
     invoices: invoicesRes.rows,
+    addons_by_plan: addonsByPlan,
+    deferred_agreements: deferred.agreements,
+    deferred_installments: deferred.installments,
   };
 }
 
@@ -1199,6 +1239,10 @@ export async function createSubscriptionWithOptions(payload: Record<string, unkn
     if (!generarFactura && discount) {
       throw new AppError(400, "VALIDATION_ERROR", "descuento_* solo se permite cuando generar_factura = true");
     }
+    const deferredAgreementInput = payload.acuerdo_pago_diferido;
+    if (deferredAgreementInput != null && (typeof deferredAgreementInput !== "object" || Array.isArray(deferredAgreementInput))) {
+      throw new AppError(400, "VALIDATION_ERROR", "acuerdo_pago_diferido debe ser un objeto");
+    }
 
     const exists = await one<{ id: string }>(
       client,
@@ -1287,6 +1331,7 @@ export async function createSubscriptionWithOptions(payload: Record<string, unkn
     }
 
     let facturaId: string | null = null;
+    let deferredAgreementId: string | null = null;
     if (generarFactura) {
       const totals = computeInvoiceDiscountTotals(charge.amount, discount);
       const factura = await one<{ id: string }>(
@@ -1317,7 +1362,19 @@ export async function createSubscriptionWithOptions(payload: Record<string, unkn
       );
     }
 
-    return { suscripcion_id: suscripcion!.id, factura_id: facturaId };
+    if (deferredAgreementInput && typeof deferredAgreementInput === "object" && !Array.isArray(deferredAgreementInput)) {
+      const agreement = await createDeferredInstallmentPlan(client, {
+        ...(deferredAgreementInput as Record<string, unknown>),
+        suscripcion_id: suscripcion!.id,
+      });
+      deferredAgreementId = String(agreement.agreement_id ?? "");
+    }
+
+    return {
+      suscripcion_id: suscripcion!.id,
+      factura_id: facturaId,
+      acuerdo_pago_diferido_id: deferredAgreementId,
+    };
   });
 }
 

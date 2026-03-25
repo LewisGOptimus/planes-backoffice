@@ -1,9 +1,11 @@
 export type BillingAction =
   | "create_subscription"
+  | "create_deferred_installment_plan"
   | "renew_subscription"
   | "upgrade_midcycle_limit"
   | "purchase_consumable"
   | "purchase_fixed_term_service"
+  | "pay_deferred_installment"
   | "add_company_with_subscription"
   | "update_plan_prices";
 
@@ -92,6 +94,12 @@ export type Customer360Response = {
     open_invoice_amount: number;
     next_renewal_date: string | null;
   };
+  deferred_installments: {
+    agreement_status: string | null;
+    next_installment_due: string | null;
+    overdue_installments: number;
+    overdue_installment_amount: number;
+  } | null;
 };
 
 export type PriceBookVersion = {
@@ -125,6 +133,7 @@ export type OperationsDashboardResponse = {
     renewals_next_30_days: number;
     overdue_subscriptions: number;
     unpaid_invoices: number;
+    overdue_installments: number;
   };
   queue: BillingAlert[];
 };

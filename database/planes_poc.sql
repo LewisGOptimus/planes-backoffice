@@ -116,6 +116,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'modo_precio_plan' AND n.nspname = 'billing') THEN
     CREATE TYPE billing.modo_precio_plan AS ENUM ('BUNDLE', 'SUM_COMPONENTS');
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'product_visibility' AND n.nspname = 'billing') THEN
+    CREATE TYPE billing.product_visibility AS ENUM ('PUBLIC', 'PRIVATE');
+  END IF;
 END $$;
 
 /* =========================
@@ -127,11 +130,10 @@ CREATE TABLE IF NOT EXISTS billing.productos (
   codigo TEXT NOT NULL UNIQUE,
   nombre TEXT NOT NULL,
   descripcion TEXT,
-  unidad_consumo TEXT,
-  descripcion_operativa TEXT,
   tipo billing.tipo_producto NOT NULL,
   alcance billing.alcance_producto NOT NULL,
   es_consumible BOOLEAN NOT NULL DEFAULT FALSE,
+  visibility billing.product_visibility NOT NULL DEFAULT 'PRIVATE',
   activo BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -330,36 +332,6 @@ WHERE NOT EXISTS (
   FROM billing.suscripciones_plan_historial h
   WHERE h.suscripcion_id = s.id
 );
-
-CREATE OR REPLACE VIEW billing.v_suscripcion_adicionales_por_plan AS
-SELECT
-  h.id::text AS historial_id,
-  h.suscripcion_id::text AS suscripcion_id,
-  h.plan_id::text AS plan_id,
-  p.nombre AS plan_nombre,
-  h.billing_cycle::text AS billing_cycle,
-  h.vigente_desde::text AS plan_vigente_desde,
-  h.vigente_hasta::text AS plan_vigente_hasta,
-  i.id::text AS item_suscripcion_id,
-  i.producto_id::text AS producto_id,
-  pr.codigo AS producto_codigo,
-  pr.nombre AS producto_nombre,
-  i.origen::text AS item_origen,
-  i.estado::text AS item_estado,
-  i.cantidad,
-  i.fecha_inicio::text AS item_fecha_inicio,
-  i.fecha_fin::text AS item_fecha_fin,
-  i.fecha_efectiva_inicio::text AS item_efectiva_inicio,
-  i.fecha_efectiva_fin::text AS item_efectiva_fin,
-  GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))::text AS solape_desde,
-  LEAST(COALESCE(h.vigente_hasta, '9999-12-31'::date), COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date))::text AS solape_hasta
-FROM billing.suscripciones_plan_historial h
-JOIN billing.planes p ON p.id = h.plan_id
-JOIN billing.items_suscripcion i ON i.suscripcion_id = h.suscripcion_id
-JOIN billing.productos pr ON pr.id = i.producto_id
-WHERE i.origen IN ('ADDON'::billing.origen_item_suscripcion, 'LEGACY'::billing.origen_item_suscripcion, 'MANUAL'::billing.origen_item_suscripcion)
-  AND GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))
-      <= LEAST(COALESCE(h.vigente_hasta, '9999-12-31'::date), COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date));
 
 /* =========================
    ENTITLEMENTS

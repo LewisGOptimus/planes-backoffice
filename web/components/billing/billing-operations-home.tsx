@@ -14,7 +14,9 @@ const ACTION_OPTIONS: Array<{ id: BillingAction; label: string; template: Record
   { id: "upgrade_midcycle_limit", label: "Upgrade con prorrateo", template: { suscripcion_id: "", entitlement_id: "", nuevo_limite: "20", producto_id: "", billing_date: new Date().toISOString().slice(0, 10) } },
   { id: "purchase_fixed_term_service", label: "Servicio vigencia fija", template: { suscripcion_id: "", producto_id: "", billing_date: new Date().toISOString().slice(0, 10), effective_start: new Date().toISOString().slice(0, 10), effective_end: new Date(Date.now() + 31536000000).toISOString().slice(0, 10) } },
   { id: "create_subscription", label: "Crear suscripcion", template: { empresa_id: "", plan_id: "", billing_cycle: "ANUAL", billing_date: new Date().toISOString().slice(0, 10), modo_renovacion: "MANUAL" } },
+  { id: "create_deferred_installment_plan", label: "Crear diferido N cuotas", template: { suscripcion_id: "", monto_total: "0", cantidad_cuotas: "3", frecuencia: "MENSUAL", fecha_primera_cuota: new Date().toISOString().slice(0, 10) } },
   { id: "add_company_with_subscription", label: "Agregar empresa + suscripcion", template: { usuario_id: "", nombre: "", plan_id: "", billing_date: new Date().toISOString().slice(0, 10) } },
+  { id: "pay_deferred_installment", label: "Pagar cuota diferida", template: { cuota_id: "", fecha_pago: new Date().toISOString().slice(0, 10), metodo_pago: "MANUAL", referencia_pago: "" } },
   { id: "update_plan_prices", label: "Actualizar precios", template: { plan_id: "", incremento_mensual: "10000", incremento_anual: "100000", billing_date: new Date().toISOString().slice(0, 10) } },
 ];
 
@@ -67,11 +69,24 @@ const ACTION_FORM_FIELDS: Record<BillingAction, FieldConfig[]> = {
     { key: "modo_renovacion", label: "Modo de renovacion", type: "select", staticOptions: [{ value: "MANUAL", label: "Manual" }, { value: "AUTOMATICA", label: "Automatica" }] },
     { key: "billing_date", label: "Fecha de inicio", type: "date" },
   ],
+  create_deferred_installment_plan: [
+    { key: "suscripcion_id", label: "Suscripcion", type: "select", lookup: "suscripciones" },
+    { key: "monto_total", label: "Monto total", type: "number" },
+    { key: "cantidad_cuotas", label: "Cantidad de cuotas", type: "number" },
+    { key: "frecuencia", label: "Frecuencia", type: "select", staticOptions: [{ value: "MENSUAL", label: "Mensual" }, { value: "TRIMESTRAL", label: "Trimestral" }, { value: "ANUAL", label: "Anual" }] },
+    { key: "fecha_primera_cuota", label: "Primera cuota", type: "date" },
+  ],
   add_company_with_subscription: [
     { key: "usuario_id", label: "Usuario responsable", type: "select", lookup: "usuarios" },
     { key: "nombre", label: "Nombre de la empresa", type: "text", placeholder: "Empresa Demo S.A.S." },
     { key: "plan_id", label: "Plan", type: "select", lookup: "planes" },
     { key: "billing_date", label: "Fecha de alta", type: "date" },
+  ],
+  pay_deferred_installment: [
+    { key: "cuota_id", label: "Id cuota", type: "text", placeholder: "UUID de la cuota" },
+    { key: "fecha_pago", label: "Fecha de pago", type: "date" },
+    { key: "metodo_pago", label: "Metodo de pago", type: "select", staticOptions: [{ value: "MANUAL", label: "Manual" }, { value: "PASARELA", label: "Pasarela" }] },
+    { key: "referencia_pago", label: "Referencia", type: "text", placeholder: "TRX-001" },
   ],
   update_plan_prices: [
     { key: "plan_id", label: "Plan", type: "select", lookup: "planes" },
@@ -202,10 +217,11 @@ export function BillingOperationsHome() {
         description="Cola operativa, alertas y acciones con preview obligatorio."
       />
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <article className="main-card-subtle"><p className="text-xs text-slate-500">Renovaciones 30d</p><p className="text-2xl font-semibold">{dashboard?.kpis.renewals_next_30_days ?? 0}</p></article>
         <article className="main-card-subtle"><p className="text-xs text-slate-500">Suscripciones vencidas</p><p className="text-2xl font-semibold">{dashboard?.kpis.overdue_subscriptions ?? 0}</p></article>
         <article className="main-card-subtle"><p className="text-xs text-slate-500">Facturas emitidas sin pago</p><p className="text-2xl font-semibold">{dashboard?.kpis.unpaid_invoices ?? 0}</p></article>
+        <article className="main-card-subtle"><p className="text-xs text-slate-500">Cuotas vencidas</p><p className="text-2xl font-semibold">{dashboard?.kpis.overdue_installments ?? 0}</p></article>
       </section>
 
       <section className="grid gap-4 xl:grid-cols-[1.3fr_1fr]">

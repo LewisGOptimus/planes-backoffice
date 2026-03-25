@@ -103,12 +103,14 @@ export default function FacturasPage() {
       columns={[
         { key: "empresa_id", label: "Empresa", options: lookups.empresas },
         { key: "suscripcion_id", label: "Suscripcion", options: lookups.suscripciones },
+        { key: "cuota_diferida_id", label: "Cuota diferida" },
         { key: "fecha_emision", label: "Fecha" },
         { key: "subtotal", label: "Subtotal" },
         { key: "descuento_monto", label: "Descuento" },
         { key: "total", label: "Total" },
         { key: "estado", label: "Estado", badge: true },
         { key: "metodo_pago", label: "Metodo", badge: true },
+        { key: "notas", label: "Detalle" },
       ]}
       initial={{ empresa_id: "", suscripcion_id: "", fecha_emision: "", fecha_vencimiento: "", subtotal: "0", descuento_tipo: "", descuento_valor: "", descuento_monto: "0", descuento_motivo: "", total: "0", estado: "EMITIDA", metodo_pago: "MANUAL" }}
     />

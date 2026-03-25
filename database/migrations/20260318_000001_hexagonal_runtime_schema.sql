@@ -3,9 +3,6 @@
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
-ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS unidad_consumo TEXT;
-ALTER TABLE billing.productos ADD COLUMN IF NOT EXISTS descripcion_operativa TEXT;
-
 ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS telefono TEXT;
 ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS departamento TEXT;
 ALTER TABLE core.empresas ADD COLUMN IF NOT EXISTS ciudad TEXT;

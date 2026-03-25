@@ -8,6 +8,15 @@ import { runWorkflow, WorkflowName } from "@/lib/services/workflows";
 import { syncPlanEntitlementsToSubscription } from "@/lib/services/entitlements";
 import { computeInvoiceDiscountTotals, parseBooleanLike, parseDiscountInput } from "@/lib/services/invoice-discounts";
 import {
+  createDeferredInstallmentPlan,
+  ensureDeferredInstallmentSchema,
+  getDeferredCustomerSnapshot,
+  payDeferredInstallment,
+  previewDeferredInstallmentPayment,
+  previewDeferredInstallmentPlan,
+  syncDeferredInstallmentState,
+} from "@/lib/services/deferred-installments";
+import {
   BillingAction,
   BillingAlert,
   BillingTimelineEvent,
@@ -182,37 +191,6 @@ async function ensureBillingModelSchema() {
       WHERE h.suscripcion_id = s.id
     )
   `);
-  await query(`
-    CREATE OR REPLACE VIEW billing.v_suscripcion_adicionales_por_plan AS
-    SELECT
-      h.id::text AS historial_id,
-      h.suscripcion_id::text AS suscripcion_id,
-      h.plan_id::text AS plan_id,
-      p.nombre AS plan_nombre,
-      h.billing_cycle::text AS billing_cycle,
-      h.vigente_desde::text AS plan_vigente_desde,
-      h.vigente_hasta::text AS plan_vigente_hasta,
-      i.id::text AS item_suscripcion_id,
-      i.producto_id::text AS producto_id,
-      pr.codigo AS producto_codigo,
-      pr.nombre AS producto_nombre,
-      i.origen::text AS item_origen,
-      i.estado::text AS item_estado,
-      i.cantidad,
-      i.fecha_inicio::text AS item_fecha_inicio,
-      i.fecha_fin::text AS item_fecha_fin,
-      i.fecha_efectiva_inicio::text AS item_efectiva_inicio,
-      i.fecha_efectiva_fin::text AS item_efectiva_fin,
-      GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))::text AS solape_desde,
-      LEAST(COALESCE(h.vigente_hasta, '9999-12-31'::date), COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date))::text AS solape_hasta
-    FROM billing.suscripciones_plan_historial h
-    JOIN billing.planes p ON p.id = h.plan_id
-    JOIN billing.items_suscripcion i ON i.suscripcion_id = h.suscripcion_id
-    JOIN billing.productos pr ON pr.id = i.producto_id
-    WHERE i.origen IN ('ADDON'::billing.origen_item_suscripcion, 'LEGACY'::billing.origen_item_suscripcion, 'MANUAL'::billing.origen_item_suscripcion)
-      AND GREATEST(h.vigente_desde, COALESCE(i.fecha_efectiva_inicio, i.fecha_inicio))
-          <= LEAST(COALESCE(h.vigente_hasta, '9999-12-31'::date), COALESCE(i.fecha_efectiva_fin, i.fecha_fin, '9999-12-31'::date))
-  `);
   await query("ALTER TABLE billing.facturas ADD COLUMN IF NOT EXISTS subtotal NUMERIC(18,2) NOT NULL DEFAULT 0");
   await query("ALTER TABLE billing.facturas ADD COLUMN IF NOT EXISTS descuento_tipo billing.tipo_descuento");
   await query("ALTER TABLE billing.facturas ADD COLUMN IF NOT EXISTS descuento_valor NUMERIC(18,4)");
@@ -244,6 +222,7 @@ async function ensureBillingModelSchema() {
       END IF;
     END $$;
   `);
+  await ensureDeferredInstallmentSchema();
 }
 
 export async function ensureBillingOpsTables() {
@@ -364,6 +343,9 @@ export async function searchCustomers(params: URLSearchParams): Promise<Customer
 }
 export async function getCustomerOverview(customerId: string): Promise<Customer360Response> {
   await ensureBillingOpsTables();
+  await runInTransaction(async (client) => {
+    await syncDeferredInstallmentState(client);
+  });
   const customer = await query<{ id: string; nombre: string; nit: string | null; timezone: string }>(
     "SELECT id, nombre, nit, timezone FROM core.empresas WHERE id = $1",
     [customerId],
@@ -423,6 +405,7 @@ export async function getCustomerOverview(customerId: string): Promise<Customer3
 
   const openInv = invRes.rows.filter((x) => x.status !== "PAGADA" && x.status !== "ANULADA");
   const activeSub = subRes.rows[0] ?? null;
+  const deferredSnapshot = await runInTransaction(async (client) => getDeferredCustomerSnapshot(client, customerId));
 
   return {
     customer: customer.rows[0],
@@ -435,6 +418,7 @@ export async function getCustomerOverview(customerId: string): Promise<Customer3
       open_invoice_amount: openInv.reduce((acc, x) => acc + Number(x.total), 0),
       next_renewal_date: activeSub?.period_end ?? null,
     },
+    deferred_installments: deferredSnapshot,
   };
 }
 
@@ -653,6 +637,14 @@ export async function previewAction(action: BillingAction, payload: Record<strin
   await ensureBillingOpsTables();
   return runInTransaction(async (client) => {
     const warnings: string[] = [];
+
+    if (action === "create_deferred_installment_plan") {
+      return { action, ...previewDeferredInstallmentPlan(payload) };
+    }
+
+    if (action === "pay_deferred_installment") {
+      return { action, ...(await previewDeferredInstallmentPayment(client, payload)) };
+    }
 
     if (action === "renew_subscription") {
       const subscriptionId = requireUuid(payload.suscripcion_id ?? payload.subscription_id, "suscripcion_id");
@@ -918,10 +910,12 @@ async function executeUpdatePlanPrices(client: PoolClient, payload: Record<strin
 function toWorkflowAction(action: BillingAction): WorkflowName | null {
   const map: Record<BillingAction, WorkflowName | null> = {
     create_subscription: null,
+    create_deferred_installment_plan: null,
     renew_subscription: "renew-subscription",
     upgrade_midcycle_limit: "upgrade-midcycle-limit",
     purchase_consumable: "purchase-consumable",
     purchase_fixed_term_service: "purchase-fixed-term-service",
+    pay_deferred_installment: null,
     add_company_with_subscription: "add-company-with-subscription",
     update_plan_prices: null,
   };
@@ -993,6 +987,10 @@ export async function executeAction(action: BillingAction, payload: Record<strin
 
     if (action === "create_subscription") {
       result = await createSubscription(client, payload);
+    } else if (action === "create_deferred_installment_plan") {
+      result = await createDeferredInstallmentPlan(client, payload);
+    } else if (action === "pay_deferred_installment") {
+      result = await payDeferredInstallment(client, payload);
     } else if (action === "update_plan_prices") {
       result = await executeUpdatePlanPrices(client, payload);
     } else {
@@ -1103,6 +1101,7 @@ export async function patchAlert(alertId: string, payload: Record<string, unknow
 export async function runAlertsBatch(): Promise<{ generated: number; generated_at: string }> {
   await ensureBillingOpsTables();
   return runInTransaction(async (client) => {
+    await syncDeferredInstallmentState(client);
     const now = new Date().toISOString();
     let generated = 0;
 
@@ -1172,7 +1171,10 @@ export async function runAlertsBatch(): Promise<{ generated: number; generated_a
 
 export async function getOperationsDashboard(): Promise<OperationsDashboardResponse> {
   await ensureBillingOpsTables();
-  const [kpiRenewals, kpiOverdue, kpiUnpaid, queue] = await Promise.all([
+  await runInTransaction(async (client) => {
+    await syncDeferredInstallmentState(client);
+  });
+  const [kpiRenewals, kpiOverdue, kpiUnpaid, kpiDeferredOverdue, queue] = await Promise.all([
     query<{ n: string }>(
       `SELECT count(*)::text AS n
          FROM billing.suscripciones
@@ -1187,6 +1189,11 @@ export async function getOperationsDashboard(): Promise<OperationsDashboardRespo
     ),
     query<{ n: string }>(
       `SELECT count(*)::text AS n FROM billing.facturas WHERE estado = 'EMITIDA'::billing.estado_factura`,
+    ),
+    query<{ n: string }>(
+      `SELECT count(*)::text AS n
+         FROM billing.cuotas_pago_diferido
+        WHERE estado = 'VENCIDA'::billing.estado_cuota_pago_diferido`,
     ),
     query<BillingAlert>(
       `SELECT id, alert_type, severity, status, empresa_id::text, suscripcion_id::text, created_at::text, due_at::text,
@@ -1204,6 +1211,7 @@ export async function getOperationsDashboard(): Promise<OperationsDashboardRespo
       renewals_next_30_days: Number(kpiRenewals.rows[0]?.n ?? "0"),
       overdue_subscriptions: Number(kpiOverdue.rows[0]?.n ?? "0"),
       unpaid_invoices: Number(kpiUnpaid.rows[0]?.n ?? "0"),
+      overdue_installments: Number(kpiDeferredOverdue.rows[0]?.n ?? "0"),
     },
     queue: queue.rows,
   };

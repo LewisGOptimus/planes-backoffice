@@ -67,9 +67,41 @@ type SubscriptionBillingRow = {
   notas: string | null;
 };
 
+type DeferredAgreementRow = {
+  agreement_id: string;
+  suscripcion_id: string;
+  contrato_id: string | null;
+  estado: string;
+  monto_total: string;
+  cantidad_cuotas: number;
+  frecuencia: string;
+  fecha_primera_cuota: string;
+  grace_days_snapshot: number;
+  cuotas_pagadas: number;
+  cuotas_vencidas: number;
+  cuotas_pendientes: number;
+  saldo_pendiente: string;
+  created_at: string;
+};
+
+type DeferredInstallmentRow = {
+  cuota_id: string;
+  acuerdo_id: string;
+  numero_cuota: number;
+  fecha_vencimiento: string;
+  monto: string;
+  estado: string;
+  fecha_pago: string | null;
+  factura_id: string | null;
+  metodo_pago: string | null;
+  referencia_pago: string | null;
+};
+
 type SubscriptionHistoryPayload = {
   history: SubscriptionPlanHistoryRow[];
   invoices: SubscriptionBillingRow[];
+  deferred_agreements: DeferredAgreementRow[];
+  deferred_installments: DeferredInstallmentRow[];
 };
 
 type ProductCatalogRow = {
@@ -114,6 +146,19 @@ type RenewDraft = {
   precio_plan_id: string;
 };
 
+type DeferredPlanDraft = {
+  monto_total: string;
+  cantidad_cuotas: string;
+  frecuencia: "MENSUAL" | "TRIMESTRAL" | "ANUAL";
+  fecha_primera_cuota: string;
+};
+
+type DeferredPaymentDraft = {
+  fecha_pago: string;
+  metodo_pago: "MANUAL" | "PASARELA";
+  referencia_pago: string;
+};
+
 type PlanChangeReason = "NUEVO_PLAN" | "RENOVACION" | "CAMBIO_PLAN";
 type ConsolidatedSubscriptionItem = {
   key: string;
@@ -148,6 +193,61 @@ const EMPTY_RENEW_DRAFT: RenewDraft = {
   billing_cycle: "MENSUAL",
   precio_plan_id: "",
 };
+
+const EMPTY_DEFERRED_PLAN_DRAFT: DeferredPlanDraft = {
+  monto_total: "",
+  cantidad_cuotas: "3",
+  frecuencia: "MENSUAL",
+  fecha_primera_cuota: "",
+};
+
+const EMPTY_DEFERRED_PAYMENT_DRAFT: DeferredPaymentDraft = {
+  fecha_pago: "",
+  metodo_pago: "MANUAL",
+  referencia_pago: "",
+};
+
+function buildDeferredPlanDraft(firstInstallmentDate = ""): DeferredPlanDraft {
+  return {
+    ...EMPTY_DEFERRED_PLAN_DRAFT,
+    fecha_primera_cuota: firstInstallmentDate,
+  };
+}
+
+function addMonthsToIsoDate(isoDate: string, months: number): string {
+  const parsed = new Date(`${isoDate}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return isoDate;
+  parsed.setUTCMonth(parsed.getUTCMonth() + months);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function buildDeferredSchedulePreview(draft: DeferredPlanDraft) {
+  const total = Number(draft.monto_total);
+  const count = Math.trunc(Number(draft.cantidad_cuotas));
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(count) || count <= 0 || !draft.fecha_primera_cuota) {
+    return [];
+  }
+
+  const monthsByFrequency: Record<DeferredPlanDraft["frecuencia"], number> = {
+    MENSUAL: 1,
+    TRIMESTRAL: 3,
+    ANUAL: 12,
+  };
+  const baseAmount = Number((total / count).toFixed(2));
+
+  return Array.from({ length: count }, (_, index) => {
+    const installmentNumber = index + 1;
+    const dueDate = addMonthsToIsoDate(draft.fecha_primera_cuota, index * monthsByFrequency[draft.frecuencia]);
+    const amount = installmentNumber === count
+      ? Number((total - baseAmount * (count - 1)).toFixed(2))
+      : baseAmount;
+    return {
+      numero_cuota: installmentNumber,
+      fecha_vencimiento: dueDate,
+      monto: amount,
+    };
+  });
+}
 
 function computeDiscountPreview(subtotal: number, discount: DiscountDraft) {
   if (!Number.isFinite(subtotal) || subtotal <= 0 || !discount.tipo || discount.valor.trim() === "") {
@@ -241,7 +341,15 @@ export default function SuscripcionesPage() {
   const [selectedPlanEntitlements, setSelectedPlanEntitlements] = useState<PlanEntitlementRow[]>([]);
   const [historyRows, setHistoryRows] = useState<SubscriptionPlanHistoryRow[]>([]);
   const [historyInvoices, setHistoryInvoices] = useState<SubscriptionBillingRow[]>([]);
+  const [deferredAgreements, setDeferredAgreements] = useState<DeferredAgreementRow[]>([]);
+  const [deferredInstallments, setDeferredInstallments] = useState<DeferredInstallmentRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [createDeferredOnCreate, setCreateDeferredOnCreate] = useState(false);
+  const [createDeferredModalOpen, setCreateDeferredModalOpen] = useState(false);
+  const [createDeferredDraft, setCreateDeferredDraft] = useState<DeferredPlanDraft>(buildDeferredPlanDraft());
+  const [payDeferredModalOpen, setPayDeferredModalOpen] = useState(false);
+  const [payDeferredTarget, setPayDeferredTarget] = useState<DeferredInstallmentRow | null>(null);
+  const [payDeferredDraft, setPayDeferredDraft] = useState<DeferredPaymentDraft>(EMPTY_DEFERRED_PAYMENT_DRAFT);
 
   const showApiError = (res: { error: { code: "VALIDATION_ERROR" | "NOT_FOUND" | "CONFLICT" | "BUSINESS_RULE_VIOLATION" | "INTERNAL_ERROR" | "UNAUTHORIZED"; message: string } }) => {
     const msg = toHumanConsumableError(res.error.message) ?? toHumanError(res.error.code, res.error.message);
@@ -279,6 +387,19 @@ export default function SuscripcionesPage() {
   const selectedSubscription = useMemo(
     () => rows.find((x) => String(x.id ?? "") === selected) ?? null,
     [rows, selected],
+  );
+  const groupedDeferredInstallments = useMemo(
+    () =>
+      deferredInstallments.reduce<Record<string, DeferredInstallmentRow[]>>((acc, installment) => {
+        if (!acc[installment.acuerdo_id]) acc[installment.acuerdo_id] = [];
+        acc[installment.acuerdo_id].push(installment);
+        return acc;
+      }, {}),
+    [deferredInstallments],
+  );
+  const hasOpenDeferredAgreement = useMemo(
+    () => deferredAgreements.some((agreement) => !["COMPLETADO", "CANCELADO"].includes(agreement.estado)),
+    [deferredAgreements],
   );
   const selectedSubscriptionPlanPrice = useMemo(() => {
     if (!selectedSubscription) return null;
@@ -330,6 +451,10 @@ export default function SuscripcionesPage() {
   const createInvoicePreview = useMemo(
     () => computeDiscountPreview(Number(selectedPlanPrice?.valor ?? 0), createDiscount),
     [selectedPlanPrice, createDiscount],
+  );
+  const createDeferredPreview = useMemo(
+    () => (createDeferredOnCreate ? buildDeferredSchedulePreview(createDeferredDraft) : []),
+    [createDeferredDraft, createDeferredOnCreate],
   );
   const addItemInvoicePreview = useMemo(
     () => computeDiscountPreview(Number((Number(selectedDraftPrice?.valor ?? 0) * Number(draft.cantidad || 0)).toFixed(2)), addItemDiscount),
@@ -417,6 +542,14 @@ export default function SuscripcionesPage() {
   }, [prices, draft.producto_id, draft.fecha_inicio]);
 
   const resetDraft = (startDate = "") => setDraft({ ...EMPTY_DRAFT, fecha_inicio: startDate });
+  const resetCreateDeferredFlow = (firstInstallmentDate = "") => {
+    setCreateDeferredOnCreate(false);
+    setCreateDeferredDraft(buildDeferredPlanDraft(firstInstallmentDate));
+  };
+  const closeCreateEditModal = () => {
+    setModal(false);
+    resetCreateDeferredFlow(editing ? "" : String(form.fecha_inicio ?? ""));
+  };
   const openAddItemModal = () => {
     if (!selected) {
       toast.error("Selecciona una suscripcion para agregar items.");
@@ -452,6 +585,7 @@ export default function SuscripcionesPage() {
     });
     setDraftItems([]);
     resetDraft(today);
+    resetCreateDeferredFlow(today);
     setCreateDiscount(EMPTY_DISCOUNT);
     setModal(true);
   };
@@ -473,6 +607,7 @@ export default function SuscripcionesPage() {
     });
     setDraftItems([]);
     resetDraft(String(row.fecha_inicio ?? ""));
+    resetCreateDeferredFlow();
     setCreateDiscount(EMPTY_DISCOUNT);
     setModal(true);
   };
@@ -571,13 +706,40 @@ export default function SuscripcionesPage() {
         payload.descuento_valor = createDiscount.valor;
         payload.descuento_motivo = createDiscount.motivo.trim() || null;
       }
+      if (createDeferredOnCreate) {
+        const total = Number(createDeferredDraft.monto_total);
+        const installments = Number(createDeferredDraft.cantidad_cuotas);
+        if (!Number.isFinite(total) || total <= 0) {
+          toast.error("El monto total del acuerdo debe ser mayor a 0.");
+          return;
+        }
+        if (!Number.isInteger(installments) || installments <= 0) {
+          toast.error("La cantidad de cuotas debe ser un entero mayor a 0.");
+          return;
+        }
+        if (!createDeferredDraft.fecha_primera_cuota) {
+          toast.error("Debes definir la fecha de la primera cuota.");
+          return;
+        }
+        payload.acuerdo_pago_diferido = {
+          monto_total: createDeferredDraft.monto_total,
+          cantidad_cuotas: createDeferredDraft.cantidad_cuotas,
+          frecuencia: createDeferredDraft.frecuencia,
+          fecha_primera_cuota: createDeferredDraft.fecha_primera_cuota,
+        };
+      }
 
-      const res = await fetchJson<{ suscripcion_id: string; factura_id: string | null }>("/api/backoffice/suscripciones/create-with-options", { method: "POST", body: payload });
+      const res = await fetchJson<{ suscripcion_id: string; factura_id: string | null; acuerdo_pago_diferido_id?: string | null }>(
+        "/api/backoffice/suscripciones/create-with-options",
+        { method: "POST", body: payload },
+      );
       if (isSuccess(res)) {
-        const msg = res.data.factura_id ? "Suscripcion creada con factura." : "Suscripcion creada sin factura.";
+        const msg = res.data.acuerdo_pago_diferido_id
+          ? (res.data.factura_id ? "Suscripcion creada con factura y acuerdo de pago diferido." : "Suscripcion creada con acuerdo de pago diferido.")
+          : (res.data.factura_id ? "Suscripcion creada con factura." : "Suscripcion creada sin factura.");
         setMessage(msg);
         toast.success(msg);
-        setModal(false);
+        closeCreateEditModal();
         await refresh();
         return;
       }
@@ -839,29 +1001,37 @@ export default function SuscripcionesPage() {
     return () => clearTimeout(t);
   }, [selectedSubscription?.plan_id]);
 
+  const loadSubscriptionHistory = async (subscriptionId: string) => {
+    try {
+      setHistoryLoading(true);
+      const res = await fetchJson<SubscriptionHistoryPayload>(`/api/backoffice/suscripciones/${subscriptionId}/historial`);
+      if (isSuccess(res)) {
+        setHistoryRows(res.data.history ?? []);
+        setHistoryInvoices(res.data.invoices ?? []);
+        setDeferredAgreements(res.data.deferred_agreements ?? []);
+        setDeferredInstallments(res.data.deferred_installments ?? []);
+      }
+    } catch {
+      toast.error("Error de red al cargar historial de planes.");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
   useEffect(() => {
     const t = setTimeout(async () => {
-      if (!historyModalOpen || !selected) {
+      if ((!historyModalOpen && !detailsModalOpen) || !selected) {
         setHistoryRows([]);
         setHistoryInvoices([]);
+        setDeferredAgreements([]);
+        setDeferredInstallments([]);
         setHistoryLoading(false);
         return;
       }
-      try {
-        setHistoryLoading(true);
-        const res = await fetchJson<SubscriptionHistoryPayload>(`/api/backoffice/suscripciones/${selected}/historial`);
-        if (isSuccess(res)) {
-          setHistoryRows(res.data.history ?? []);
-          setHistoryInvoices(res.data.invoices ?? []);
-        }
-      } catch {
-        toast.error("Error de red al cargar historial de planes.");
-      } finally {
-        setHistoryLoading(false);
-      }
+      await loadSubscriptionHistory(selected);
     }, 0);
     return () => clearTimeout(t);
-  }, [historyModalOpen, selected]);
+  }, [detailsModalOpen, historyModalOpen, selected]);
 
   const historyWithInvoices = useMemo(
     () =>
@@ -897,6 +1067,84 @@ export default function SuscripcionesPage() {
     if (!d) return false;
     const today = new Date().toISOString().slice(0, 10);
     return d < today;
+  };
+
+  const openDeferredPlanModal = () => {
+    const defaultDate = String(selectedSubscription?.periodo_actual_inicio ?? selectedSubscription?.fecha_inicio ?? new Date().toISOString().slice(0, 10));
+    setCreateDeferredDraft(buildDeferredPlanDraft(defaultDate));
+    setCreateDeferredModalOpen(true);
+  };
+
+  const openPayDeferredModal = (installment: DeferredInstallmentRow) => {
+    setPayDeferredTarget(installment);
+    setPayDeferredDraft({
+      fecha_pago: new Date().toISOString().slice(0, 10),
+      metodo_pago: "MANUAL",
+      referencia_pago: installment.referencia_pago ?? "",
+    });
+    setPayDeferredModalOpen(true);
+  };
+
+  const submitDeferredPlan = async () => {
+    if (!selected) return;
+    try {
+      const res = await fetchJson<{ result: { agreement_id: string } }>(
+        "/api/v2/billing/actions/create_deferred_installment_plan/execute",
+        {
+          method: "POST",
+          headers: { "idempotency-key": crypto.randomUUID() },
+          body: {
+            suscripcion_id: selected,
+            monto_total: createDeferredDraft.monto_total,
+            cantidad_cuotas: createDeferredDraft.cantidad_cuotas,
+            frecuencia: createDeferredDraft.frecuencia,
+            fecha_primera_cuota: createDeferredDraft.fecha_primera_cuota,
+          },
+        },
+      );
+      if (!isSuccess(res)) {
+        showApiError(res);
+        return;
+      }
+      toast.success("Acuerdo de pagos diferidos creado.");
+      setCreateDeferredModalOpen(false);
+      setCreateDeferredDraft(buildDeferredPlanDraft());
+      await refresh();
+      await loadSubscriptionHistory(selected);
+    } catch {
+      toast.error("Error de red al crear el acuerdo diferido.");
+    }
+  };
+
+  const submitDeferredPayment = async () => {
+    if (!selected || !payDeferredTarget) return;
+    try {
+      const res = await fetchJson<{ result: { factura_id: string } }>(
+        "/api/v2/billing/actions/pay_deferred_installment/execute",
+        {
+          method: "POST",
+          headers: { "idempotency-key": crypto.randomUUID() },
+          body: {
+            cuota_id: payDeferredTarget.cuota_id,
+            fecha_pago: payDeferredDraft.fecha_pago,
+            metodo_pago: payDeferredDraft.metodo_pago,
+            referencia_pago: payDeferredDraft.referencia_pago.trim() || null,
+          },
+        },
+      );
+      if (!isSuccess(res)) {
+        showApiError(res);
+        return;
+      }
+      toast.success("Pago registrado y factura emitida.");
+      setPayDeferredModalOpen(false);
+      setPayDeferredTarget(null);
+      setPayDeferredDraft(EMPTY_DEFERRED_PAYMENT_DRAFT);
+      await refresh();
+      await loadSubscriptionHistory(selected);
+    } catch {
+      toast.error("Error de red al registrar el pago de la cuota.");
+    }
   };
 
   const renderGuidedItemBuilder = (mode: "existing" | "draft") => (
@@ -1085,6 +1333,13 @@ export default function SuscripcionesPage() {
           setIntegrationHistoryModalOpen(false);
           setIntegrationHistoryRows([]);
           setIntegrationHistoryProductLabel("");
+          setDeferredAgreements([]);
+          setDeferredInstallments([]);
+          setCreateDeferredModalOpen(false);
+          setCreateDeferredDraft(buildDeferredPlanDraft());
+          setPayDeferredModalOpen(false);
+          setPayDeferredTarget(null);
+          setPayDeferredDraft(EMPTY_DEFERRED_PAYMENT_DRAFT);
           setSelected("");
           setSelectedEntitlements([]);
           setSelectedPlanEntitlements([]);
@@ -1129,6 +1384,93 @@ export default function SuscripcionesPage() {
                 </div>
               </div>
             </div>
+
+            <section className="rounded-2xl border border-[#DCE8F7] bg-[linear-gradient(180deg,#FFFFFF_0%,#F8FBFF_100%)] p-3.5">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="font-semibold text-slate-900">Pagos diferidos</h4>
+                  <p className="text-xs text-slate-500">Acuerdos en cuotas adicionales a la facturacion recurrente.</p>
+                </div>
+                <button
+                  onClick={openDeferredPlanModal}
+                  className="ui-btn ui-btn-primary ui-btn-sm"
+                  disabled={hasOpenDeferredAgreement}
+                >
+                  {hasOpenDeferredAgreement ? "Acuerdo activo" : "Crear acuerdo"}
+                </button>
+              </div>
+              {historyLoading && deferredAgreements.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                  Cargando pagos diferidos...
+                </p>
+              ) : deferredAgreements.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                  Sin acuerdos de pagos diferidos para esta suscripcion.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {deferredAgreements.map((agreement) => {
+                    const installments = groupedDeferredInstallments[agreement.agreement_id] ?? [];
+                    return (
+                      <article key={agreement.agreement_id} className="rounded-xl border border-slate-200 bg-white p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">
+                              Acuerdo {agreement.agreement_id.slice(0, 8)} | {agreement.estado}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Frecuencia: {agreement.frecuencia} | Primera cuota: {formatDateOnly(agreement.fecha_primera_cuota)}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+                            <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 font-medium">Total: {formatMoney(agreement.monto_total)}</span>
+                            <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 font-medium">Saldo: {formatMoney(agreement.saldo_pendiente)}</span>
+                            <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 font-medium">Vencidas: {agreement.cuotas_vencidas}</span>
+                            <span className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 font-medium">Pagadas: {agreement.cuotas_pagadas}/{agreement.cantidad_cuotas}</span>
+                          </div>
+                        </div>
+                        <div className="mt-3 overflow-auto">
+                          <table className="min-w-full text-left text-xs">
+                            <thead className="text-slate-500">
+                              <tr>
+                                <th className="px-2 py-1">Cuota</th>
+                                <th className="px-2 py-1">Vencimiento</th>
+                                <th className="px-2 py-1">Monto</th>
+                                <th className="px-2 py-1">Estado</th>
+                                <th className="px-2 py-1">Pago</th>
+                                <th className="px-2 py-1">Factura</th>
+                                <th className="px-2 py-1">Accion</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {installments.map((installment) => (
+                                <tr key={installment.cuota_id} className="border-t border-slate-200">
+                                  <td className="px-2 py-1.5 font-medium text-slate-700">{installment.numero_cuota}</td>
+                                  <td className="px-2 py-1.5 text-slate-600">{formatDateOnly(installment.fecha_vencimiento)}</td>
+                                  <td className="px-2 py-1.5 text-slate-600">{formatMoney(installment.monto)}</td>
+                                  <td className="px-2 py-1.5">{badge(installment.estado)}</td>
+                                  <td className="px-2 py-1.5 text-slate-600">{formatDateOnly(installment.fecha_pago)}</td>
+                                  <td className="px-2 py-1.5 text-slate-600">{installment.factura_id ? installment.factura_id.slice(0, 8) : "-"}</td>
+                                  <td className="px-2 py-1.5">
+                                    {(installment.estado === "PROGRAMADA" || installment.estado === "VENCIDA") ? (
+                                      <button onClick={() => openPayDeferredModal(installment)} className="ui-btn ui-btn-outline ui-btn-sm">
+                                        Registrar pago
+                                      </button>
+                                    ) : (
+                                      <span className="text-slate-400">Sin accion</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
 
             <div className="grid gap-3 xl:grid-cols-2">
               <section className="rounded-2xl border border-[#DCE8F7] bg-[linear-gradient(180deg,#FFFFFF_0%,#F8FBFF_100%)] p-3.5">
@@ -1344,6 +1686,131 @@ export default function SuscripcionesPage() {
         )}
       </AppModal>
 
+      <AppModal
+        open={createDeferredModalOpen}
+        onClose={() => {
+          setCreateDeferredModalOpen(false);
+          setCreateDeferredDraft(buildDeferredPlanDraft());
+        }}
+        maxWidthClassName="max-w-2xl"
+        title="Crear acuerdo de pagos diferidos"
+      >
+        <div className="main-stack">
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-xs">
+              Monto total
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={createDeferredDraft.monto_total}
+                onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, monto_total: e.target.value }))}
+                className="mt-1 ui-input"
+              />
+            </label>
+            <label className="text-xs">
+              Cantidad de cuotas
+              <input
+                type="number"
+                min="1"
+                value={createDeferredDraft.cantidad_cuotas}
+                onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, cantidad_cuotas: e.target.value }))}
+                className="mt-1 ui-input"
+              />
+            </label>
+            <label className="text-xs">
+              Frecuencia
+              <select
+                value={createDeferredDraft.frecuencia}
+                onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, frecuencia: e.target.value as DeferredPlanDraft["frecuencia"] }))}
+                className="mt-1 ui-input"
+              >
+                <option value="MENSUAL">MENSUAL</option>
+                <option value="TRIMESTRAL">TRIMESTRAL</option>
+                <option value="ANUAL">ANUAL</option>
+              </select>
+            </label>
+            <label className="text-xs">
+              Fecha primera cuota
+              <input
+                type="date"
+                value={createDeferredDraft.fecha_primera_cuota}
+                onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, fecha_primera_cuota: e.target.value }))}
+                className="mt-1 ui-input"
+              />
+            </label>
+          </div>
+          <p className="text-xs text-slate-600">
+            La suscripcion quedara pausada y bloqueada hasta pagar la primera cuota.
+          </p>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setCreateDeferredModalOpen(false)} className="ui-btn ui-btn-outline">Cancelar</button>
+            <button onClick={submitDeferredPlan} className="ui-btn ui-btn-primary">Crear acuerdo</button>
+          </div>
+        </div>
+      </AppModal>
+
+      <AppModal
+        open={payDeferredModalOpen}
+        onClose={() => {
+          setPayDeferredModalOpen(false);
+          setPayDeferredTarget(null);
+          setPayDeferredDraft(EMPTY_DEFERRED_PAYMENT_DRAFT);
+        }}
+        maxWidthClassName="max-w-xl"
+        title="Registrar pago de cuota"
+      >
+        {!payDeferredTarget ? (
+          <p className="text-sm text-slate-600">Selecciona una cuota para registrar el pago.</p>
+        ) : (
+          <div className="main-stack">
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <p className="text-sm font-semibold text-slate-900">
+                Cuota {payDeferredTarget.numero_cuota} | {formatMoney(payDeferredTarget.monto)}
+              </p>
+              <p className="text-xs text-slate-500">
+                Vencimiento: {formatDateOnly(payDeferredTarget.fecha_vencimiento)} | Estado: {payDeferredTarget.estado}
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="text-xs">
+                Fecha de pago
+                <input
+                  type="date"
+                  value={payDeferredDraft.fecha_pago}
+                  onChange={(e) => setPayDeferredDraft((prev) => ({ ...prev, fecha_pago: e.target.value }))}
+                  className="mt-1 ui-input"
+                />
+              </label>
+              <label className="text-xs">
+                Metodo de pago
+                <select
+                  value={payDeferredDraft.metodo_pago}
+                  onChange={(e) => setPayDeferredDraft((prev) => ({ ...prev, metodo_pago: e.target.value as DeferredPaymentDraft["metodo_pago"] }))}
+                  className="mt-1 ui-input"
+                >
+                  <option value="MANUAL">MANUAL</option>
+                  <option value="PASARELA">PASARELA</option>
+                </select>
+              </label>
+            </div>
+            <label className="text-xs">
+              Referencia de pago
+              <input
+                type="text"
+                value={payDeferredDraft.referencia_pago}
+                onChange={(e) => setPayDeferredDraft((prev) => ({ ...prev, referencia_pago: e.target.value }))}
+                className="mt-1 ui-input"
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setPayDeferredModalOpen(false)} className="ui-btn ui-btn-outline">Cancelar</button>
+              <button onClick={submitDeferredPayment} className="ui-btn ui-btn-primary">Registrar pago</button>
+            </div>
+          </div>
+        )}
+      </AppModal>
+
       <p className="text-xs text-slate-600">{message}</p>
 
       <AppModal
@@ -1421,7 +1888,7 @@ export default function SuscripcionesPage() {
 
       <AppModal
         open={modal}
-        onClose={() => setModal(false)}
+        onClose={closeCreateEditModal}
         maxWidthClassName="max-w-3xl"
         title={editing ? "Editar suscripcion" : "Nueva suscripcion"}
       >
@@ -1430,7 +1897,7 @@ export default function SuscripcionesPage() {
               <label className="text-xs">Plan<select value={form.plan_id} onChange={(e) => setForm((p) => ({ ...p, plan_id: e.target.value }))} className="mt-1 ui-input"><option value="">Plan...</option>{lookups.planes.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}</select></label>
               <label className="text-xs">Ciclo de cobro<select value={form.billing_cycle} onChange={(e) => setForm((p) => ({ ...p, billing_cycle: e.target.value }))} className="mt-1 ui-input"><option value="MENSUAL">MENSUAL</option><option value="TRIMESTRAL">TRIMESTRAL</option><option value="ANUAL">ANUAL</option></select></label>
               <label className="text-xs">Modo renovacion<select value={form.modo_renovacion} onChange={(e) => setForm((p) => ({ ...p, modo_renovacion: e.target.value }))} className="mt-1 ui-input"><option value="MANUAL">MANUAL</option><option value="AUTOMATICA">AUTOMATICA</option></select></label>
-              <label className="text-xs">Fecha inicio<input type="date" value={form.fecha_inicio} onChange={(e) => { const v = e.target.value; setForm((p) => ({ ...p, fecha_inicio: v })); setDraft((p) => ({ ...p, fecha_inicio: v })); }} className="mt-1 ui-input" /></label>
+              <label className="text-xs">Fecha inicio<input type="date" value={form.fecha_inicio} onChange={(e) => { const v = e.target.value; const previousStartDate = form.fecha_inicio; setForm((p) => ({ ...p, fecha_inicio: v })); setDraft((p) => ({ ...p, fecha_inicio: v })); setCreateDeferredDraft((prev) => { if (editing || !createDeferredOnCreate) return prev; if (prev.fecha_primera_cuota && prev.fecha_primera_cuota !== previousStartDate) return prev; return { ...prev, fecha_primera_cuota: v }; }); }} className="mt-1 ui-input" /></label>
               {editing ? (
                 <label className="text-xs">Estado<select value={form.estado} onChange={(e) => setForm((p) => ({ ...p, estado: e.target.value }))} className="mt-1 ui-input"><option value="ACTIVA">ACTIVA</option><option value="PAUSADA">PAUSADA</option><option value="CANCELADA">CANCELADA</option><option value="EXPIRADA">EXPIRADA</option></select></label>
               ) : (
@@ -1455,6 +1922,7 @@ export default function SuscripcionesPage() {
                 <p className="mt-2 text-xs text-slate-600">Subtotal: {formatMoney(createInvoicePreview.subtotal)} | Descuento: {formatMoney(createInvoicePreview.discount)} | Neto: {formatMoney(createInvoicePreview.total)}</p>
               </div>
             )}
+           
             {!editing && (
               <div className="mt-3 rounded border border-slate-200 p-3">
                 <p className="text-xs font-semibold">Items manuales opcionales</p>
@@ -1464,8 +1932,106 @@ export default function SuscripcionesPage() {
                 </ul>
               </div>
             )}
+            {!editing && (
+              <div className="mt-3 rounded border border-slate-200 p-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold">Acuerdo de pago diferido</p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      Opcional. Si lo agregas desde aqui, la suscripcion quedara pausada y bloqueada hasta pagar la primera cuota.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setCreateDeferredOnCreate((prev) => !prev);
+                      if (!createDeferredOnCreate) {
+                        setCreateDeferredDraft((prev) => prev.fecha_primera_cuota ? prev : buildDeferredPlanDraft(form.fecha_inicio));
+                      }
+                    }}
+                    className={createDeferredOnCreate ? "ui-btn ui-btn-outline" : "ui-btn ui-btn-primary"}
+                  >
+                    {createDeferredOnCreate ? "Quitar acuerdo de pago" : "Agregar acuerdo de pago"}
+                  </button>
+                </div>
+                {createDeferredOnCreate && (
+                  <>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <label className="text-xs">
+                        Monto total
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={createDeferredDraft.monto_total}
+                          onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, monto_total: e.target.value }))}
+                          className="mt-1 ui-input"
+                        />
+                      </label>
+                      <label className="text-xs">
+                        Cantidad de cuotas
+                        <input
+                          type="number"
+                          min="1"
+                          value={createDeferredDraft.cantidad_cuotas}
+                          onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, cantidad_cuotas: e.target.value }))}
+                          className="mt-1 ui-input"
+                        />
+                      </label>
+                      <label className="text-xs">
+                        Frecuencia
+                        <select
+                          value={createDeferredDraft.frecuencia}
+                          onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, frecuencia: e.target.value as DeferredPlanDraft["frecuencia"] }))}
+                          className="mt-1 ui-input"
+                        >
+                          <option value="MENSUAL">MENSUAL</option>
+                          <option value="TRIMESTRAL">TRIMESTRAL</option>
+                          <option value="ANUAL">ANUAL</option>
+                        </select>
+                      </label>
+                      <label className="text-xs">
+                        Fecha primera cuota
+                        <input
+                          type="date"
+                          value={createDeferredDraft.fecha_primera_cuota}
+                          onChange={(e) => setCreateDeferredDraft((prev) => ({ ...prev, fecha_primera_cuota: e.target.value }))}
+                          className="mt-1 ui-input"
+                        />
+                      </label>
+                    </div>
+                    {createDeferredPreview.length > 0 && (
+                      <div className="mt-3 overflow-hidden rounded-lg border border-slate-200">
+                        <div className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">
+                          Cuotas proyectadas
+                        </div>
+                        <div className="max-h-56 overflow-auto">
+                          <table className="min-w-full text-left text-xs">
+                            <thead className="bg-white text-slate-500">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">Cuota</th>
+                                <th className="px-3 py-2 font-medium">Vencimiento</th>
+                                <th className="px-3 py-2 font-medium">Monto</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {createDeferredPreview.map((installment) => (
+                                <tr key={`${installment.numero_cuota}-${installment.fecha_vencimiento}`} className="border-t border-slate-200 bg-white">
+                                  <td className="px-3 py-2 font-medium text-slate-700">{installment.numero_cuota}</td>
+                                  <td className="px-3 py-2 text-slate-600">{formatDateOnly(installment.fecha_vencimiento)}</td>
+                                  <td className="px-3 py-2 text-slate-600">{formatMoney(installment.monto)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button onClick={() => setModal(false)} className="ui-btn ui-btn-outline">Cancelar</button>
+              <button onClick={closeCreateEditModal} className="ui-btn ui-btn-outline">Cancelar</button>
               <button onClick={save} className="ui-btn ui-btn-primary">Guardar</button>
             </div>
       </AppModal>
@@ -1504,7 +2070,7 @@ export default function SuscripcionesPage() {
               />
             </label>
           </div>
-          <div className="mt-2 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <div className="mt-2 flex flex-col-reiverse gap-2 sm:flex-row sm:justify-end">
             <button
               onClick={() => {
                 setCancelModalOpen(false);

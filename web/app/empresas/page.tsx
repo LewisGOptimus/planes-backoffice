@@ -46,7 +46,6 @@ type ConsumablePoolRow = {
   producto_id: string;
   producto_codigo: string;
   producto_nombre: string;
-  unidad_consumo: string | null;
   comprado: number;
   consumido: number;
   restante: number;
@@ -381,7 +380,6 @@ export default function EmpresasPage() {
                         <thead className="bg-slate-50">
                           <tr>
                             <th className="px-3 py-2 text-left font-medium text-slate-500">Producto</th>
-                            <th className="px-3 py-2 text-left font-medium text-slate-500">Unidad</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-500">Comprado</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-500">Consumido</th>
                             <th className="px-3 py-2 text-left font-medium text-slate-500">Restante</th>
@@ -392,7 +390,6 @@ export default function EmpresasPage() {
                           {(poolByEmpresa[c.empresa_id] ?? []).map((row) => (
                             <tr key={`${row.suscripcion_id}-${row.producto_id}`} className="border-t border-slate-200/70">
                               <td className="px-3 py-2 text-slate-700">{row.producto_nombre}</td>
-                              <td className="px-3 py-2 text-slate-500">{row.unidad_consumo ?? "-"}</td>
                               <td className="px-3 py-2 text-slate-700">{row.comprado}</td>
                               <td className="px-3 py-2 text-slate-700">{row.consumido}</td>
                               <td className="px-3 py-2 text-slate-700">{row.restante}</td>
@@ -401,7 +398,7 @@ export default function EmpresasPage() {
                           ))}
                           {(poolByEmpresa[c.empresa_id] ?? []).length === 0 && (
                             <tr>
-                              <td className="px-3 py-3 text-slate-500" colSpan={6}>No hay pool consumible vigente para esta empresa.</td>
+                              <td className="px-3 py-3 text-slate-500" colSpan={5}>No hay pool consumible vigente para esta empresa.</td>
                             </tr>
                           )}
                         </tbody>

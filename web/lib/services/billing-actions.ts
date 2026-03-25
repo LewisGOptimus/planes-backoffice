@@ -3,10 +3,12 @@ import { BillingAction } from "@/lib/types/billing-v2";
 
 const ACTIONS: BillingAction[] = [
   "create_subscription",
+  "create_deferred_installment_plan",
   "renew_subscription",
   "upgrade_midcycle_limit",
   "purchase_consumable",
   "purchase_fixed_term_service",
+  "pay_deferred_installment",
   "add_company_with_subscription",
   "update_plan_prices",
 ];

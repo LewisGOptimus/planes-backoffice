@@ -6,6 +6,10 @@ import { createRow, deleteRow, getRowById, listRows, updateRow } from "@/lib/rep
 import { query } from "@/lib/db";
 import { CRUD_RESOURCES } from "@/lib/crud-catalog";
 import {
+  assertValidProductShape,
+  ensureProductCatalogSchema,
+} from "@/lib/services/product-catalog";
+import {
   runAfterSubscriptionCreate,
   runAfterSubscriptionPatch,
   runBeforeSubscriptionCreate,
@@ -18,7 +22,7 @@ type RouteContext = {
 };
 
 async function ensureProductoSchema() {
-  return;
+  await ensureProductCatalogSchema();
 }
 
 async function ensureEmpresaSchema() {
@@ -227,6 +231,7 @@ async function ensureContractPatchRules(contractId: string, payload: Record<stri
 }
 
 async function ensureProductCreateRules(payload: Record<string, unknown>) {
+  assertValidProductShape(payload);
   const tipo = asCleanString(payload.tipo);
   if (tipo !== "CONSUMIBLE") return;
 
@@ -237,12 +242,20 @@ async function ensureProductCreateRules(payload: Record<string, unknown>) {
 }
 
 async function ensureProductPatchRules(id: string, payload: Record<string, unknown>) {
-  const current = await query<{ tipo: string; unidad_consumo: string | null }>(
-    "SELECT tipo::text AS tipo, unidad_consumo FROM billing.productos WHERE id = $1 LIMIT 1",
+  const current = await query<{
+    tipo: string;
+    unidad_consumo: string | null;
+    visibility: string;
+  }>(
+    "SELECT tipo::text AS tipo, unidad_consumo, visibility::text AS visibility FROM billing.productos WHERE id = $1 LIMIT 1",
     [id],
   );
   const row = current.rows[0];
   if (!row) throw new AppError(404, "NOT_FOUND", "productos not found");
+
+  assertValidProductShape({
+    visibility: payload.visibility ?? row.visibility,
+  });
 
   const tipo = asCleanString(payload.tipo) || row.tipo;
   if (tipo !== "CONSUMIBLE") return;
