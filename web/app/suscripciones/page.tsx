@@ -741,6 +741,11 @@ export default function SuscripcionesPage() {
         toast.success(msg);
         closeCreateEditModal();
         await refresh();
+        setSelected(res.data.suscripcion_id);
+        setAutoInvoiceOnAddItem(false);
+        setAddItemDiscount(EMPTY_DISCOUNT);
+        setEntitlementSearch("");
+        setDetailsModalOpen(true);
         return;
       }
       showApiError(res);
@@ -1010,7 +1015,13 @@ export default function SuscripcionesPage() {
         setHistoryInvoices(res.data.invoices ?? []);
         setDeferredAgreements(res.data.deferred_agreements ?? []);
         setDeferredInstallments(res.data.deferred_installments ?? []);
+        return;
       }
+      setHistoryRows([]);
+      setHistoryInvoices([]);
+      setDeferredAgreements([]);
+      setDeferredInstallments([]);
+      toast.error(res.error.message);
     } catch {
       toast.error("Error de red al cargar historial de planes.");
     } finally {

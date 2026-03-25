@@ -40,6 +40,8 @@ type SuscripcionRow = {
   precio_plan_id: string | null;
   billing_cycle: string | null;
   estado: string | null;
+  operational_status?: string | null;
+  grace_until?: string | null;
   fecha_inicio?: string | null;
   periodo_actual_inicio?: string | null;
   created_at?: string | null;
@@ -301,8 +303,7 @@ export default function TrazabilidadEmpresasPage() {
 
       const pickSubscription = (empresaId: string) => {
         const list = sortSubscriptions(suscripcionesByEmpresa.get(empresaId) ?? []);
-        const active = list.find((x) => String(x.estado ?? "").toUpperCase() === "ACTIVA");
-        return active ?? list[0] ?? null;
+        return list[0] ?? null;
       };
 
       const itemToView = (it: ItemSuscripcionRow): PlanItemView => ({
@@ -334,11 +335,24 @@ export default function TrazabilidadEmpresasPage() {
         const numericCost = Number(priceRow?.valor ?? 0);
         const planCost = Number.isFinite(numericCost) && numericCost > 0 ? `$ ${numericCost.toLocaleString("es-CO")}` : "-";
         const cycleLabel = String(sub?.billing_cycle ?? priceRow?.periodo ?? "").toUpperCase() || "-";
+        const hasSubscription = Boolean(sub?.id);
+        const rawSubscriptionState = String(sub?.estado ?? card?.estado_suscripcion ?? "").toUpperCase();
+        const rawOperationalState = String(sub?.operational_status ?? "").toUpperCase();
+        const isSuspendedByState =
+          hasSubscription &&
+          (
+            rawSubscriptionState === "PAUSADA" ||
+            rawSubscriptionState === "CANCELADA" ||
+            rawSubscriptionState === "EXPIRADA" ||
+            rawOperationalState === "BLOQUEADA"
+          );
         const isSuspendedByExpiry = subscriptionDays != null && subscriptionDays < 0;
         const isExpiringSoon =
-          (subscriptionDays != null && subscriptionDays >= 0 && subscriptionDays <= 3) ||
-          (certificateDays != null && certificateDays >= 0 && certificateDays <= 3);
-        const hasSubscription = Boolean(sub?.id);
+          !isSuspendedByState &&
+          (
+            (subscriptionDays != null && subscriptionDays >= 0 && subscriptionDays <= 3) ||
+            (certificateDays != null && certificateDays >= 0 && certificateDays <= 3)
+          );
         const subscriptionInvoices = sub?.id ? facturasBySuscripcion.get(String(sub.id)) ?? [] : [];
         const normalizedStart = toDateOnly(subscriptionStart);
         const normalizedEnd = toDateOnly(subscriptionEnd);
@@ -372,9 +386,9 @@ export default function TrazabilidadEmpresasPage() {
           }
         }
         const subscriptionVisualState: TraceRow["estado_suscripcion_vista"] =
-          !hasSubscription ? "SIN_SUSCRIPCION" : isSuspendedByExpiry ? "SUSPENDIDO" : isExpiringSoon ? "POR_VENCER" : "ACTIVA";
+          !hasSubscription ? "SIN_SUSCRIPCION" : (isSuspendedByState || isSuspendedByExpiry) ? "SUSPENDIDO" : isExpiringSoon ? "POR_VENCER" : "ACTIVA";
         const empresaEstado: TraceRow["estado_empresa"] =
-          isSuspendedByExpiry ? "SUSPENDIDO" : isExpiringSoon ? "POR_VENCER" : !empresa.activa ? "INACTIVA" : "ACTIVA";
+          (isSuspendedByState || isSuspendedByExpiry) ? "SUSPENDIDO" : isExpiringSoon ? "POR_VENCER" : !empresa.activa ? "INACTIVA" : "ACTIVA";
         const statusDesc =
           certificateState === "SIN_CERTIFICADO"
             ? "No hay suscripcion/certificado activo asociado."
@@ -399,8 +413,8 @@ export default function TrazabilidadEmpresasPage() {
           dias_vigencia_certificado: certificateDays,
           dias_vigencia: d,
           estado_certificado: certificateState,
-          descripcion: `${statusDesc} Suscripcion: ${card?.estado_suscripcion ?? "N/A"}${card?.plan_nombre ? ` | Plan: ${card.plan_nombre}` : ""}`,
-          estado_suscripcion: card?.estado_suscripcion ?? "SIN_SUSCRIPCION",
+          descripcion: `${statusDesc} Suscripcion: ${rawSubscriptionState || "N/A"}${rawOperationalState ? ` | Operacion: ${rawOperationalState}` : ""}${card?.plan_nombre ? ` | Plan: ${card.plan_nombre}` : ""}`,
+          estado_suscripcion: rawSubscriptionState || "SIN_SUSCRIPCION",
           owner: card?.owner_nombre ?? card?.owner_email ?? "Sin responsable",
           owner_email: card?.owner_email ?? "-",
           telefono: card?.telefono ?? "-",

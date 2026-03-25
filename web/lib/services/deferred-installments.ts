@@ -284,9 +284,15 @@ async function upsertDeferredAlert(client: PoolClient, params: {
 
   await client.query(
     `INSERT INTO billing.alerts (alert_type, severity, empresa_id, suscripcion_id, status, due_at, snapshot_json)
-     VALUES ('deferred_installment_overdue', 'high', $1, $2, 'open', $3::date, $4::jsonb)
-     ON CONFLICT (alert_type, empresa_id, suscripcion_id, status)
-     DO NOTHING`,
+     SELECT 'deferred_installment_overdue', 'high', $1, $2, 'open', $3::date, $4::jsonb
+      WHERE NOT EXISTS (
+        SELECT 1
+          FROM billing.alerts
+         WHERE alert_type = 'deferred_installment_overdue'
+           AND empresa_id = $1
+           AND suscripcion_id = $2
+           AND status IN ('open', 'in_progress')
+      )`,
     [params.empresaId, params.suscripcionId, params.dueAt, JSON.stringify(params.payload)],
   );
 }
